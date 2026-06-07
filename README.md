@@ -1,6 +1,6 @@
 <div align="center">
 
-# Growbot
+# TARS
 
 **An open-source, TARS-inspired bipedal robot — body, simulation, and (eventually) a brain.**
 
@@ -15,9 +15,13 @@
 
 ---
 
-## What is Growbot?
+## What is TARS?
 
-Growbot is a **real, buildable bipedal robot** inspired by the **TARS** monolith from
+This project is an exploration into the system 1/2 thinking paradigm that's the basis of the human brain (Thinking Fast and Slow - Daniel Kahnman).
+The system 1 is a fast ~50m parameter model that runs on a Raspberry Pi Zero 2W and learns balance, gait and locomotion, whereas system 2 is the creative, imaginative but slower half of the brain that runs via a VLM.
+When they work together, they create general robots with personality and purpose.
+
+TARS is a **real, buildable bipedal robot** inspired by the **TARS** monolith from
 *Interstellar* — the faithful "one big rectangle + two small rectangle legs" silhouette,
 **not** the 4-panel transforming toy. It's a ~290 mm (≈11.4 in), ~1.4 kg robot with three
 vertical slabs:
