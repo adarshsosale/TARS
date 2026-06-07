@@ -287,8 +287,15 @@ Pin conflicts between Isaac Sim wheels and Isaac Lab dependencies
 install successfully and runtime works. Don't try to "fix" them by
 pinning versions; you'll cascade into other breakages.
 
-### Training outputs end up inside `external/`
-`train.py` writes `logs/` relative to the IsaacLab working directory,
-so checkpoints/videos land under `external/IsaacLab/logs/...` and are
-gitignored. If you want them tracked, copy or symlink them out, or
-pass an explicit `--log_dir` outside `external/` when running training.
+### Training the Growbot task
+
+Use `isaac_lab/train.py` (not IsaacLab's built-in `train.py`) to train Growbot.
+It registers the Growbot task and routes logs to `<project_root>/logs/` automatically:
+
+```bash
+cd external/IsaacLab
+PYTHONUNBUFFERED=1 ./isaaclab.sh -p ../../isaac_lab/train.py \
+  --task Isaac-Velocity-Flat-Growbot-Direct-v0 --headless
+```
+
+Checkpoints land in `logs/rsl_rl/growbot_flat_direct/<timestamp>/`.
