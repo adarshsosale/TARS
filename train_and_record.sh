@@ -93,12 +93,22 @@ echo "  conda env  : ${CONDA_DEFAULT_ENV:-<none>}"
 [[ -x "$ISAACLAB_SH" ]] || { echo "✖ isaaclab.sh not found/executable at $ISAACLAB_SH"; exit 1; }
 
 # ---------------------------------------------------------------------------
+# kill_tree PID — SIGKILL a process and all of its descendants (depth first).
+# Used because Isaac hangs at simulation_app.close(); we can't wait on it.
+# ---------------------------------------------------------------------------
+kill_tree() {
+    local p="$1" k
+    for k in $(pgrep -P "$p" 2>/dev/null); do kill_tree "$k"; done
+    kill -9 "$p" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # run_stage NAME LOGFILE MARKER -- <command...>
 #
-# Runs <command> in its own process group, tees output to LOGFILE *and* the
-# terminal (real-time), and waits until MARKER appears in the log or the process
-# exits. Then kills the (possibly hung-on-close) process group. Returns 0 only
-# if MARKER was seen.
+# Runs <command>, tees its output to LOGFILE *and* the terminal (real-time),
+# and waits until MARKER appears in the log or the process exits on its own.
+# Then kills the (possibly hung-on-close) process tree. Returns 0 only if
+# MARKER was seen.
 # ---------------------------------------------------------------------------
 run_stage() {
     local name="$1" logf="$2" marker="$3"; shift 3
@@ -109,11 +119,10 @@ run_stage() {
     echo "------------------------------------------------------------"
 
     : > "$logf"
-    # own session/process group so we can kill the whole tree on hang
-    PYTHONUNBUFFERED=1 setsid bash -c 'exec "$@"' _ "$@" >>"$logf" 2>&1 &
+    PYTHONUNBUFFERED=1 "$@" >>"$logf" 2>&1 &
     local pid=$!
 
-    # live stream to terminal; dies when the worker pid dies
+    # live stream to terminal; tail dies when the worker pid dies
     tail -n +1 -f --pid="$pid" "$logf" &
     local tpid=$!
 
@@ -129,8 +138,8 @@ run_stage() {
     # double-check (covers a clean, fast exit that beat the loop)
     grep -q -- "$marker" "$logf" 2>/dev/null && found=0
 
-    # kill the (often hung at simulation_app.close) process group
-    kill -9 -- -"$pid" 2>/dev/null
+    # kill the whole tree (the python child typically hangs at simulation_app.close)
+    kill_tree "$pid"
     wait "$pid" 2>/dev/null
 
     echo "------------------------------------------------------------"
