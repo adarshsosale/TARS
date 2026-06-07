@@ -97,8 +97,11 @@ class Obj:
         c0=self._vadd(cx,y0,cz); c1=self._vadd(cx,y1,cz)
         for i in range(seg):
             j=(i+1)%seg
-            self.face([r0[i],r0[j],r1[j],r1[i]])
-            self.face([c0,r0[j],r0[i]]); self.face([c1,r1[i],r1[j]])
+            # winding reversed vs cyl_x: a +Y axis with the (cos->x,sin->z)
+            # parameterisation is left-handed, so the naive order points the
+            # normals INWARD.  Reverse side + caps so they face outward.
+            self.face([r1[i],r1[j],r0[j],r0[i]])
+            self.face([c0,r0[i],r0[j]]); self.face([c1,r1[j],r1[i]])
 
     # flat link bar between two (z,y) points at a given X (crank/rod/rocker) ---
     def link_bar(self, x, z0,y0, z1,y1, w=4.0, tx=4.0):
@@ -106,7 +109,9 @@ class Obj:
         pz,py=-dy/L*w/2, dz/L*w/2                 # perpendicular in the Z-Y plane
         pts=[(z0+pz,y0+py),(z0-pz,y0-py),(z1-pz,y1-py),(z1+pz,y1+py)]
         x0,x1=x-tx/2,x+tx/2
-        self._corners([(x0,y,z) for (z,y) in pts]+[(x1,y,z) for (z,y) in pts])
+        # x1-face first so _corners' fixed winding lands normals OUTWARD
+        # (the x0-first order reflected the solid -> inward normals).
+        self._corners([(x1,y,z) for (z,y) in pts]+[(x0,y,z) for (z,y) in pts])
 
     # ----- panel-grid helpers (uniform cols, varying rows) -------------------
     @staticmethod
