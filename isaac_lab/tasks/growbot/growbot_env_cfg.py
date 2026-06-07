@@ -156,7 +156,11 @@ class GrowbotFlatEnvCfg(DirectRLEnvCfg):
     joint_accel_reward_scale = -5.0e-7        # damp high-freq jitter (moderate)
     joint_vel_reward_scale = -1.0e-4          # damp buzzing (moderate)
     action_rate_reward_scale = -0.03          # punish vibrating commands (moderate)
-    feet_air_time_reward_scale = 0.5          # reward real, lifted steps
-    feet_air_time_threshold = 0.2             # min step duration to count
+    feet_air_time_reward_scale = 0.6          # reward real, lifted steps
+    feet_air_time_threshold = 0.25            # min step duration to count (longer = more deliberate)
     foot_slip_reward_scale = -0.15            # punish scuffing/sliding feet (moderate)
     undesired_contact_reward_scale = -1.0
+    # gait shaping
+    gait_symmetry_reward_scale = -1.0         # small: keep L/R anti-phase mirror -> straight, coordinated
+    step_stride_reward_scale = 0.3            # reward wide alternating hip excursion -> larger, deliberate steps
+    ankle_usage_reward_scale = 0.3            # reward alternating ankle motion -> actually use the ankles

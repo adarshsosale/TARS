@@ -47,6 +47,9 @@ class GrowbotEnv(DirectRLEnv):
                 "feet_air_time",
                 "foot_slip",
                 "undesired_contacts",
+                "gait_symmetry",
+                "step_stride",
+                "ankle_usage",
             ]
         }
 
@@ -55,6 +58,11 @@ class GrowbotEnv(DirectRLEnv):
         self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies("leg_.*_link")
         # robot-frame body indices for the feet (for foot-velocity / slip)
         self._feet_body_ids, _ = self._robot.find_bodies("foot_.*_link")
+        # individual joint indices for gait-symmetry / stride / ankle-usage rewards
+        self._hip_l_id = self._robot.find_joints("hip_left")[0][0]
+        self._hip_r_id = self._robot.find_joints("hip_right")[0][0]
+        self._ankle_l_id = self._robot.find_joints("ankle_left")[0][0]
+        self._ankle_r_id = self._robot.find_joints("ankle_right")[0][0]
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
@@ -149,6 +157,23 @@ class GrowbotEnv(DirectRLEnv):
             torch.max(torch.norm(net_contact_forces[:, :, self._undesired_contact_body_ids], dim=-1), dim=1)[0] > 1.0
         )
         contacts = torch.sum(is_contact, dim=1)
+        # ----- gait shaping: symmetry, stride size, ankle engagement -----
+        # only shape the gait when actually commanded to move (don't punish standing)
+        move_cmd = (torch.norm(self._commands[:, :2], dim=1) > 0.1).float()
+        joint_offset = self._robot.data.joint_pos - self._robot.data.default_joint_pos
+        hip_l = joint_offset[:, self._hip_l_id]
+        hip_r = joint_offset[:, self._hip_r_id]
+        ankle_l = joint_offset[:, self._ankle_l_id]
+        ankle_r = joint_offset[:, self._ankle_r_id]
+        # symmetric anti-phase gait: left should mirror right (offsets sum to ~0).
+        # penalising the sum keeps the two sides coordinated -> tracks straight.
+        gait_symmetry = torch.square(hip_l + hip_r) + torch.square(ankle_l + ankle_r)
+        # larger, more deliberate steps: reward a wide alternating hip excursion
+        # (the legs opening front-to-back). Pairs with the symmetry penalty above:
+        # sum -> 0, difference -> large == big clean alternating strides.
+        step_stride = torch.abs(hip_l - hip_r) * move_cmd
+        # engage the ankles: reward alternating ankle motion (push-off / clearance)
+        ankle_usage = torch.abs(ankle_l - ankle_r) * move_cmd
 
         rewards = {
             "track_lin_vel_xy_exp": lin_vel_error_mapped * self.cfg.lin_vel_reward_scale * self.step_dt,
@@ -169,6 +194,9 @@ class GrowbotEnv(DirectRLEnv):
             "feet_air_time": air_time * self.cfg.feet_air_time_reward_scale * self.step_dt,
             "foot_slip": foot_slip * self.cfg.foot_slip_reward_scale * self.step_dt,
             "undesired_contacts": contacts * self.cfg.undesired_contact_reward_scale * self.step_dt,
+            "gait_symmetry": gait_symmetry * self.cfg.gait_symmetry_reward_scale * self.step_dt,
+            "step_stride": step_stride * self.cfg.step_stride_reward_scale * self.step_dt,
+            "ankle_usage": ankle_usage * self.cfg.ankle_usage_reward_scale * self.step_dt,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         for key, value in rewards.items():
