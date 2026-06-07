@@ -1,0 +1,51 @@
+# Growbot materials
+newmtl mat_body
+Kd 0.72 0.73 0.74
+Ks 0.10 0.10 0.10
+Ns 20
+newmtl mat_panel_line
+Kd 0.66 0.67 0.68
+Ns 20
+newmtl mat_accent
+Kd 0.13 0.13 0.14
+Ns 8
+newmtl mat_accent_rib
+Kd 0.18 0.18 0.19
+Ns 8
+newmtl mat_tpu
+Kd 0.06 0.06 0.06
+Ns 4
+newmtl mat_tpu_tread
+Kd 0.10 0.10 0.10
+Ns 4
+newmtl mat_panel
+Kd 0.55 0.56 0.58
+Ns 20
+newmtl mat_motor
+Kd 0.24 0.26 0.30
+Ks 0.30 0.30 0.30
+Ns 40
+newmtl mat_print_cf
+Kd 0.16 0.16 0.18
+Ks 0.18 0.18 0.20
+Ns 25
+newmtl mat_wire
+Kd 0.70 0.12 0.12
+Ns 10
+newmtl mat_steel
+Kd 0.62 0.64 0.68
+Ks 0.55 0.55 0.55
+Ns 60
+newmtl mat_battery
+Kd 0.14 0.42 0.34
+Ns 15
+newmtl mat_pcb
+Kd 0.08 0.34 0.16
+Ns 15
+newmtl mat_servo
+Kd 0.10 0.13 0.24
+Ks 0.20 0.20 0.22
+Ns 30
+newmtl mat_horn
+Kd 0.85 0.85 0.80
+Ns 20

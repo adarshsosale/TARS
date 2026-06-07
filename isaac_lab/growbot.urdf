@@ -1,0 +1,124 @@
+<?xml version="1.0"?>
+<robot name="growbot">
+
+  <link name="base_link">
+    <inertial>
+      <origin xyz="-0.000397 -0.000000 -0.092453" rpy="0 0 0"/>
+      <mass value="0.77381"/>
+      <inertia ixx="5.077842e-03" ixy="-2.275920e-22" ixz="6.435708e-06" iyy="4.865389e-03" iyz="9.605125e-21" izz="6.513856e-04"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/base_link.obj" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.075000" rpy="0 0 0"/>
+      <geometry><box size="0.058000 0.082000 0.270000"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.216000" rpy="0 0 0"/>
+      <geometry><box size="0.050000 0.060000 0.012000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="leg_left_link">
+    <inertial>
+      <origin xyz="0.000313 -0.000075 -0.084381" rpy="0 0 0"/>
+      <mass value="0.24384"/>
+      <inertia ixx="1.432583e-03" ixy="-1.650400e-06" ixz="-3.757082e-06" iyy="1.422022e-03" iyz="-1.171100e-05" izz="1.114463e-04"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/leg_left_link.obj" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.059000" rpy="0 0 0"/>
+      <geometry><box size="0.044000 0.044000 0.238000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="leg_right_link">
+    <inertial>
+      <origin xyz="0.000313 0.000075 -0.084381" rpy="0 0 0"/>
+      <mass value="0.24384"/>
+      <inertia ixx="1.432583e-03" ixy="1.650400e-06" ixz="-3.757082e-06" iyy="1.422022e-03" iyz="1.171100e-05" izz="1.114463e-04"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/leg_right_link.obj" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.059000" rpy="0 0 0"/>
+      <geometry><box size="0.044000 0.044000 0.238000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="foot_left_link">
+    <inertial>
+      <origin xyz="-0.000066 -0.000384 -0.030787" rpy="0 0 0"/>
+      <mass value="0.08840"/>
+      <inertia ixx="4.263341e-05" ixy="-1.503248e-07" ixz="1.953378e-07" iyy="9.055385e-05" iyz="1.128619e-06" izz="1.083648e-04"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/foot_left_link.obj" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.026000" rpy="0 0 0"/>
+      <geometry><box size="0.097000 0.057000 0.034000"/></geometry>
+    </collision>
+  </link>
+
+  <link name="foot_right_link">
+    <inertial>
+      <origin xyz="-0.000066 0.000384 -0.030787" rpy="0 0 0"/>
+      <mass value="0.08840"/>
+      <inertia ixx="4.263341e-05" ixy="1.503248e-07" ixz="1.953378e-07" iyy="9.055385e-05" iyz="-1.128619e-06" izz="1.083648e-04"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/foot_right_link.obj" scale="1 1 1"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.000000 0.000000 -0.026000" rpy="0 0 0"/>
+      <geometry><box size="0.097000 0.057000 0.034000"/></geometry>
+    </collision>
+  </link>
+
+  <joint name="hip_left" type="revolute">
+    <parent link="base_link"/>
+    <child link="leg_left_link"/>
+    <origin xyz="0.000000 -0.069000 0.000000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.571" upper="1.571" effort="1.08" velocity="6.16"/>
+    <dynamics damping="0.05" friction="0.0"/>
+  </joint>
+
+  <joint name="hip_right" type="revolute">
+    <parent link="base_link"/>
+    <child link="leg_right_link"/>
+    <origin xyz="0.000000 0.069000 0.000000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.571" upper="1.571" effort="1.08" velocity="6.16"/>
+    <dynamics damping="0.05" friction="0.0"/>
+  </joint>
+
+  <joint name="ankle_left" type="revolute">
+    <parent link="leg_left_link"/>
+    <child link="foot_left_link"/>
+    <origin xyz="0.000000 0.000000 -0.187000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.855" upper="0.855" effort="1.33" velocity="5.0"/>
+    <dynamics damping="0.05" friction="0.0"/>
+  </joint>
+
+  <joint name="ankle_right" type="revolute">
+    <parent link="leg_right_link"/>
+    <child link="foot_right_link"/>
+    <origin xyz="0.000000 0.000000 -0.187000" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.855" upper="0.855" effort="1.33" velocity="5.0"/>
+    <dynamics damping="0.05" friction="0.0"/>
+  </joint>
+
+</robot>
