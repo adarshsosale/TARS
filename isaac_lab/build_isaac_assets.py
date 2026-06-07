@@ -34,8 +34,8 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 GEN  = os.path.join(ROOT, "generate_growbot.py")
-OBJ  = os.path.join(ROOT, "Growbot_TARS.obj")
-MTL  = os.path.join(ROOT, "Growbot_TARS.mtl")
+OBJ  = os.path.join(ROOT, "model", "Growbot_TARS.obj")
+MTL  = os.path.join(ROOT, "model", "Growbot_TARS.mtl")
 MESH_DIR = os.path.join(HERE, "meshes")
 
 MM = 0.001  # mm -> m

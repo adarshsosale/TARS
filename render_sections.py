@@ -3,13 +3,16 @@
 
 Geometry is clipped against axis-aligned planes (real polygon clipping, so the
 cut edges are clean and you see *into* the cavity), then painter-sorted.
-Outputs: section_front, section_hip, section_ankle, cutaway_iso, detail_ankle.
+Outputs (to previews/): section_front, section_hip, section_hip_top, section_ankle, wiring.
 """
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
+import os
 import numpy as np
+
+os.makedirs("previews", exist_ok=True)
 
 COL = {  # legible colours for the cutaways
  "mat_body":(0.78,0.79,0.80), "mat_panel_line":(0.70,0.71,0.72),
@@ -25,7 +28,7 @@ COL = {  # legible colours for the cutaways
 
 def load():
     V=[]; F=[]; M=[]; G=[]; cur="mat_body"; grp="none"
-    for ln in open("Growbot_TARS.obj"):
+    for ln in open("model/Growbot_TARS.obj"):
         if ln.startswith("v "):
             _,x,y,z=ln.split(); V.append((float(x),float(y),float(z)))
         elif ln.startswith("o "): grp=ln.split()[1]
@@ -77,8 +80,8 @@ def render(fname, planes, screen, depth_axis, depth_sign, xlim, ylim,
                 bbox=dict(boxstyle="round,pad=0.3",fc="white",ec="0.4",alpha=0.92),
                 arrowprops=dict(arrowstyle="->",color="0.15",lw=1.3))
     ax.set_xlim(*xlim); ax.set_ylim(*ylim); ax.set_aspect('equal'); ax.axis('off')
-    plt.tight_layout(); plt.savefig(fname,dpi=125,bbox_inches="tight"); plt.close()
-    print("wrote",fname)
+    plt.tight_layout(); plt.savefig(os.path.join("previews",fname),dpi=125,bbox_inches="tight"); plt.close()
+    print("wrote previews/"+fname)
 
 # 1) FRONTAL section: cut away the front half (keep z<=1), look from +Z.
 #    Shows battery, boards, both hip wheels + shafts, both ankle stacks.
@@ -114,38 +117,7 @@ render("section_ankle.png",
        planes=[(0,-58.0,True)], screen=[2,1], depth_axis=0, depth_sign=+1,
        xlim=(-60,60), ylim=(-5,150), title="ANKLE DRIVE  (sagittal, left leg)")
 
-# 4) 3D-ish quarter cutaway: remove x>0 and z>0, oblique projection.
-def render_iso(fname):
-    planes=[(0,1.0,True),(2,1.0,True)]
-    a=np.radians(26)   # oblique: screen = (X + k*Z, Y + k2*Z)
-    kx,ky=math._cos if False else np.cos(a)*0.55, np.sin(a)*0.55
-    polys=[];cols=[];deps=[]
-    for f,m in zip(F,M):
-        p=V[f].astype(float)
-        for (ax,val,kl) in planes:
-            p=clip(p,ax,val,kl)
-            if p is None: break
-        if p is None: continue
-        nrm=np.cross(p[1]-p[0],p[2]-p[0]); nl=np.linalg.norm(nrm); sh=0.55
-        if nl>0: sh=0.45+0.55*max(0,abs(np.dot(nrm/nl,LIGHT)))
-        sx=p[:,0]+kx*p[:,2]; sy=p[:,1]+ky*p[:,2]
-        polys.append(np.column_stack([sx,sy])); cols.append(np.clip(np.array(COL.get(m,(.7,.7,.7)))*sh,0,1))
-        deps.append(p[:,2].mean()-p[:,0].mean())
-    order=np.argsort(deps)
-    fig,ax=plt.subplots(figsize=(7,9)); ax.set_title("QUARTER CUTAWAY",fontsize=11,family="monospace")
-    ax.add_collection(PatchCollection([Polygon(polys[i],closed=True) for i in order],
-        facecolors=[cols[i] for i in order],edgecolors=(0,0,0,0.28),linewidths=0.18))
-    ax.set_xlim(-100,70); ax.set_ylim(-5,315); ax.set_aspect('equal'); ax.axis('off')
-    plt.tight_layout(); plt.savefig(fname,dpi=125,bbox_inches="tight"); plt.close(); print("wrote",fname)
-import math
-render_iso("cutaway_iso.png")
-
-# 5) ANKLE detail — sagittal zoom (servo standing in the leg + the hinge)
-render("detail_ankle.png",
-       planes=[(0,-58.0,True)], screen=[2,1], depth_axis=0, depth_sign=+1,
-       xlim=(-45,45), ylim=(-2,112), title="ANKLE DETAIL (sagittal)", figsize=(6,7))
-
-# 6) ANKLE explainer — oblique cutaway from the OUTBOARD-front so the pushrod
+# 4) ANKLE explainer — oblique cutaway from the OUTBOARD-front so the pushrod
 #    (which runs on the outer side of the leg) is not hidden by the leg wall.
 def render_ankle(fname, annot=None, explode=None,
                  title="ANKLE — MG996R in leg  ->  pushrod  ->  foot", figsize=(7.5,7)):
@@ -183,55 +155,10 @@ def render_ankle(fname, annot=None, explode=None,
                 bbox=dict(boxstyle="round,pad=0.3",fc="white",ec="0.4",alpha=0.92),
                 arrowprops=dict(arrowstyle="->",color="0.15",lw=1.3))
     ax.set_aspect('equal'); ax.axis('off')
-    plt.tight_layout(); plt.savefig(fname,dpi=130,bbox_inches="tight"); plt.close()
-    print("wrote",fname)
-render_ankle("annotated_ankle.png", annot=[
-    ("MG996R ankle servo\n(same part as the hip)", (60,82), (8,100)),
-    ("crank, printed CF (R~13.5)", (89,74), (104,90)),
-    ("pushrod, printed CF",       (86,60), (112,62)),
-    ("foot rocker, printed CF\n(R~16.6 -> 1.23x torque)", (88,46), (108,36)),
-    ("hinge pin Ø8, printed CF\n(or M3 bolt) = ankle axis", (64,43), (2,52)),
-    ("open ankle gap 18 mm\n(foot pitches +/-~25 deg)", (52,47), (2,26)),
-    ("TPU tread sole", (60,4), (6,2)),
-])
+    plt.tight_layout(); plt.savefig(os.path.join("previews",fname),dpi=130,bbox_inches="tight"); plt.close()
+    print("wrote previews/"+fname)
 
-# 6b) ANKLE exploded — every drive part is 3D-printed (CF-ABS)
-render_ankle("ankle_exploded.png",
-    title="ANKLE — exploded view (all drive parts 3D-printed)", figsize=(8.5,8.5),
-    explode={
-      "ankle_servo_L":   (0,  26,   0),   # lift servo up out of the leg
-      "ankle_crank_L":   (0,  30,  36),   # printed parts pulled forward (+Z) + spread
-      "ankle_pushrod_L": (0,   8,  56),
-      "foot_rocker_L":   (0, -16,  36),
-      "ankle_pivot_L":   (-52, 0,   0),   # pin slid out along its own axis
-      "foot_left":       (0, -46,   0),   # foot dropped to open the joint
-      "foot_pad_left":   (0, -46,   0),
-    },
-    annot=[
-      ("MG996R servo (bought)\nlifted out of the leg", (66,108), (6,120)),
-      ("crank  (printed CF)",        (110,112), (130,122)),
-      ("pushrod  (printed CF)",      (122,84),  (140,86)),
-      ("foot rocker  (printed CF)",  (110,40),  (132,28)),
-      ("hinge pin  (printed CF,\nor drop-in M3 bolt)", (122,44), (150,52)),
-      ("leg shell  (CF-ABS)",        (58,86),   (4,96)),
-      ("foot + TPU sole (printed)",  (58,-12),  (4,-14)),
-    ])
-
-# 7) LABELLED system layout (frontal)
-render("annotated_layout.png",
-       planes=[(2,1.0,True)], screen=[0,1], depth_axis=2, depth_sign=+1,
-       xlim=(-122,122), ylim=(-5,315), title="GROWBOT — internal layout (MG996R)",
-       figsize=(8,9),
-       annot=[
-        ("Hip servo MG996R x2\n(spline+horn -> leg)", (-44,225), (52,262)),
-        ("Pi Zero 2W + PCA9685", (0,158), (66,150)),
-        ("LiPo 2S 3300mAh - low\n= low centre of mass", (0,72), (-120,110)),
-        ("Ankle servo MG996R\n(stands in the leg,\nsame part as the hip)", (-66,82), (-128,96)),
-        ("crank -> pushrod ->\nfoot rocker (outboard)", (-92,60), (-132,40)),
-        ("ankle hinge pin", (-68,43), (40,30)),
-       ])
-
-# 8) WIRING — frontal view cut just in front of the cables (z<=17) so the red
+# 5) WIRING — frontal view cut just in front of the cables (z<=17) so the red
 #    ankle-servo cables are the frontmost thing: torso PCA9685 -> hip -> down leg.
 render("wiring.png",
        planes=[(2,17.0,True)], screen=[0,1], depth_axis=2, depth_sign=+1,

@@ -15,11 +15,11 @@ Drive architecture — direct-drive hobby servos (MG996R), no worm/gears:
   * NOT self-locking (no worm): the servos hold position under power; the wide
     feet + low CoM keep it stable, and the central rest foot parks it.
 
-Units: mm, +Y up, +Z forward.  Output: Growbot_TARS.obj + .mtl
+Units: mm, +Y up, +Z forward.  Output: model/Growbot_TARS.obj + .mtl
 Every part is its own `o` group.  See render_sections.py for the cutaways.
 """
 
-import math
+import math, os
 
 # ---------------------------------------------------------------- parameters --
 STAND_H = 290.0         # 305->290 (~11.4 in): shorten to offset the wider torso, hold mass
@@ -369,7 +369,8 @@ shell(-CF_W/2,CF_W/2, CF_CLEAR+PAD_H,T_BOT, -CF_D/2,CF_D/2, cap_top=False, cap_b
 decorate_gray(-CF_W/2,CF_W/2,CF_CLEAR+PAD_H,T_BOT,-CF_D/2,CF_D/2)
 O.group("central_rest_pad"); tpu_pad(0.0,CF_CLEAR,CF_W,CF_D)
 
-O.write("Growbot_TARS.obj","Growbot_TARS.mtl")
+os.makedirs("model", exist_ok=True)
+O.write("model/Growbot_TARS.obj","model/Growbot_TARS.mtl")
 
 # --------------------------------------------------------------- materials ---
 mtl="""# Growbot materials
@@ -424,13 +425,13 @@ newmtl mat_horn
 Kd 0.85 0.85 0.80
 Ns 20
 """
-open("Growbot_TARS.mtl","w").write(mtl)
+open("model/Growbot_TARS.mtl","w").write(mtl)
 
 xs=[p[0] for p in O.v]; ys=[p[1] for p in O.v]; zs=[p[2] for p in O.v]
 print(f"vertices {len(O.v)}  faces {sum(1 for k,_ in O.lines if k=='f')}")
 print(f"X {min(xs):.1f}..{max(xs):.1f}  Y {min(ys):.1f}..{max(ys):.1f}  Z {min(zs):.1f}..{max(zs):.1f}")
 print("groups:", sum(1 for k,_ in O.lines if k=='o'))
-print("wrote Growbot_TARS.obj + Growbot_TARS.mtl")
+print("wrote model/Growbot_TARS.obj + model/Growbot_TARS.mtl")
 
 # ---- mass estimate (parametric, from accumulated solid volumes) --------------
 # densities g/mm^3: ABS 1.04, CF-ABS 1.10, TPU 1.20 (walls = solid perimeters).

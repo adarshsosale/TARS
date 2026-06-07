@@ -4,7 +4,7 @@
 
 **An open-source, TARS-inspired bipedal robot — body, simulation, and (eventually) a brain.**
 
-<img src="assembly_3d/iso_cutaway_3d.png" alt="Growbot quarter cutaway" width="300"/>
+<img src="previews/iso_cutaway_3d.png" alt="Growbot quarter cutaway" width="300"/>
 
 [![status](https://img.shields.io/badge/status-pre--alpha-orange)](#project-status)
 [![phase](https://img.shields.io/badge/current-3D%20model%20%2B%20sim%20prep-blue)](#roadmap)
@@ -92,13 +92,20 @@ Full details, BOM, wiring and design rationale are in
 ```
 .
 ├── generate_growbot.py      # ★ parametric model generator — the source of truth
-├── Growbot_TARS.obj / .mtl   # the generated model (mm, 30 named part groups)
+├── render_sections.py        # 2D cross-section renderer (outputs to previews/)
+├── render_preview.py         # quick flat-shaded previews (outputs to previews/)
 ├── Growbot_TARS_spec.md      # spec: dimensions, drivetrain, print/assembly notes
 ├── HANDOFF.md                # full state capsule (read this to resume work)
 │
-├── render_sections.py        # 2D cross-section / cutaway renderer
-├── assembly_3d/              # ★ true-3D isometric cutaways + exploded views
-│   └── render3d.py
+├── model/                    # generated 3D model files
+│   ├── Growbot_TARS.obj      #   the model (mm, 30 named part groups)
+│   └── Growbot_TARS.mtl      #   material colours
+│
+├── previews/                 # ★ all rendered images + 3D render script
+│   ├── render3d.py           #   ★ true-3D isometric cutaways + exploded views
+│   ├── iso_cutaway_3d.png    #   whole robot quarter cutaway (used in README)
+│   ├── hip_3d.png / ankle_*.png / print_parts_3d.png
+│   └── section_*.png / elev_*.png / wiring.png / preview_*.png
 │
 ├── isaac_lab/                # ★ NVIDIA Isaac Lab simulation assets
 │   ├── growbot.urdf          #   5 links, 4 revolute DOF, box collisions, analytic inertia
@@ -109,8 +116,9 @@ Full details, BOM, wiring and design rationale are in
 │   └── inertia_report.md     #   per-link mass / CoM / inertia + validation results
 ├── ISAAC_LAB_SETUP.md        # ★ step-by-step sim/training setup guide (start here for sim)
 │
-├── Interstellar-TARS.*        # reference: the original TARS toy model
-└── Reference images/          # reference photos
+└── reference/                # third-party reference files
+    ├── Interstellar-TARS.*   #   original TARS toy model (fan-made)
+    └── images/               #   reference photos
 ```
 
 ★ = the best places to start.
@@ -127,7 +135,7 @@ Requirements: **Python 3** and **NumPy** (model generation + sim asset build);
 python3 generate_growbot.py
 
 # 2) render the true-3D cutaway / exploded / print-part views
-python3 assembly_3d/render3d.py        # outputs assembly_3d/*.png
+python3 previews/render3d.py           # outputs previews/*.png
 
 # 3) build + validate the Isaac Lab simulation assets
 python3 isaac_lab/build_isaac_assets.py
@@ -163,8 +171,8 @@ URDF→USD conversion, the ArticulationRoot gotcha, and wiring up an RL task —
   dark accent band; heat-set inserts and M3 screws at every joint.
 
 <div align="center">
-<img src="assembly_3d/hip_3d.png" alt="Coaxial hip servos" width="320"/>
-<img src="assembly_3d/ankle_exploded_3d.png" alt="Ankle pushrod linkage, exploded" width="220"/>
+<img src="previews/hip_3d.png" alt="Coaxial hip servos" width="320"/>
+<img src="previews/ankle_exploded_3d.png" alt="Ankle pushrod linkage, exploded" width="220"/>
 </div>
 
 ---

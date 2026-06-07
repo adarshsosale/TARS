@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Quick flat-shaded preview renders of Growbot_TARS.obj (for visual checks)."""
+import os
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
+
+os.makedirs("previews", exist_ok=True)
 
 colmap = {
     "mat_body":(0.72,0.73,0.74), "mat_panel_line":(0.62,0.63,0.64),
@@ -12,7 +15,7 @@ colmap = {
     "mat_joint":(0.5,0.51,0.56), "mat_panel":(0.6,0.61,0.63),
 }
 verts=[]; faces=[]; fmat=[]; cur="mat_body"
-for line in open("Growbot_TARS.obj"):
+for line in open("model/Growbot_TARS.obj"):
     if line.startswith("v "):
         _,x,y,z=line.split(); verts.append((float(x),float(y),float(z)))
     elif line.startswith("usemtl"): cur=line.split()[1]
@@ -33,8 +36,8 @@ def render(elev,azim,fname):
         edgecolors=(0,0,0,0.12),linewidths=0.15))
     ax.set_xlim(-100,100); ax.set_ylim(-100,100); ax.set_zlim(0,306)
     ax.set_box_aspect((200,200,306)); ax.view_init(elev=elev,azim=azim); ax.set_axis_off()
-    plt.tight_layout(); plt.savefig(fname,dpi=120,bbox_inches="tight"); plt.close()
-    print("wrote",fname)
+    plt.tight_layout(); plt.savefig(os.path.join("previews",fname),dpi=120,bbox_inches="tight"); plt.close()
+    print("wrote previews/"+fname)
 
 render(12,-72,"preview_front.png")
 render(2,0,"preview_side.png")

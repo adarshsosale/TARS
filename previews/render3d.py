@@ -3,10 +3,10 @@
 
 Unlike the flat `section_*.png` slices, this rotates the model in 3D (azimuth +
 elevation), projects orthographically, and painter's-sorts every face, so you
-see the inner workings in three dimensions.  Reads ../Growbot_TARS.obj and writes
-the PNGs next to this file (assembly_3d/).
+see the inner workings in three dimensions.  Reads ../model/Growbot_TARS.obj and writes
+the PNGs next to this file (previews/).
 
-  python3 assembly_3d/render3d.py        # (needs numpy + matplotlib)
+  python3 previews/render3d.py        # (needs numpy + matplotlib)
 
 Views written:
   iso_cutaway_3d.png      whole robot, near quarter removed -> internals in 3D
@@ -23,7 +23,7 @@ from matplotlib.patches import Polygon, Patch
 from matplotlib.collections import PatchCollection
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OBJ  = os.path.join(HERE, "..", "Growbot_TARS.obj")
+OBJ  = os.path.join(HERE, "..", "model", "Growbot_TARS.obj")
 SPLIT_Y = 150.0
 
 COL = {  # material base colours (for assembled / material views)

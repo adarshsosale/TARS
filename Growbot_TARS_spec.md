@@ -115,8 +115,8 @@ Modelled inside the torso shell (`battery`, `pcb_main`, `pcb_driver`):
 ### DOF summary
 4 powered DOF (2 hip-pitch + 2 ankle-pitch): hips direct-servo, ankles servo+pushrod.
 **Two hip servos — one per leg** (both legs driven), now **coaxial & symmetric** (back-to-
-back on the X axis at Z=0; torso widened to 82) — see `section_hip_top.png` / `assembly_3d/
-hip_3d.png`. Lateral balance relies on
+back on the X axis at Z=0; torso widened to 82) — see `previews/section_hip_top.png` /
+`previews/hip_3d.png`. Lateral balance relies on
 the wide/long feet + small torso sway; the central rest foot (`central_rest_foot`, 8 mm
 clearance, `CF_CLEAR`) is the anti-tip/parking support.
 
@@ -136,7 +136,7 @@ clearance, `CF_CLEAR`) is the anti-tip/parking support.
 - **Bed splits + screw joints.** Slabs split at `SPLIT_Y=150` (in the dark band). Printed
   bosses straddle the seam + M3 screws (torso 4, each leg 4); lower half gets a heat-set
   insert, upper half a clearance hole. Gusset bosses to the wall corners in CAD.
-- **True-3D renders** live in `assembly_3d/` (run `render3d.py`): `iso_cutaway_3d`,
+- **True-3D renders** live in `previews/` (run `previews/render3d.py`): `iso_cutaway_3d`,
   `hip_3d`, `ankle_3d`, `ankle_exploded_3d`, and `print_parts_3d` (bed-split halves lifted
   apart + a legend of exactly what prints as one piece vs separately).
 - **Mass** auto-computed by the generator: **≈1.40 kg** @3 mm walls (≈1.15 @2 mm).
