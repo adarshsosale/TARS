@@ -47,6 +47,7 @@ class GrowbotEnv(DirectRLEnv):
                 "feet_air_time",
                 "foot_slip",
                 "undesired_contacts",
+                "single_stance",
                 "gait_symmetry",
                 "step_stride",
                 "ankle_usage",
@@ -160,6 +161,13 @@ class GrowbotEnv(DirectRLEnv):
         # ----- gait shaping: symmetry, stride size, ankle engagement -----
         # only shape the gait when actually commanded to move (don't punish standing)
         move_cmd = (torch.norm(self._commands[:, :2], dim=1) > 0.1).float()
+        # single-support: exactly one foot planted while moving. This is the core
+        # gait insight baked into the reward — one leg stays planted and sweeps
+        # the body forward (push-off, the ankle keeping the foot flat) while the
+        # OTHER leg lifts and swings forward. Rewarding the XOR of the two foot
+        # contacts directly crowds out the both-feet-on-the-ground buzzing /
+        # vibration gait, which can never satisfy a single-support bonus.
+        single_stance = (feet_contact[:, 0] ^ feet_contact[:, 1]).float() * move_cmd
         joint_offset = self._robot.data.joint_pos - self._robot.data.default_joint_pos
         hip_l = joint_offset[:, self._hip_l_id]
         hip_r = joint_offset[:, self._hip_r_id]
@@ -194,6 +202,7 @@ class GrowbotEnv(DirectRLEnv):
             "feet_air_time": air_time * self.cfg.feet_air_time_reward_scale * self.step_dt,
             "foot_slip": foot_slip * self.cfg.foot_slip_reward_scale * self.step_dt,
             "undesired_contacts": contacts * self.cfg.undesired_contact_reward_scale * self.step_dt,
+            "single_stance": single_stance * self.cfg.single_stance_reward_scale * self.step_dt,
             "gait_symmetry": gait_symmetry * self.cfg.gait_symmetry_reward_scale * self.step_dt,
             "step_stride": step_stride * self.cfg.step_stride_reward_scale * self.step_dt,
             "ankle_usage": ankle_usage * self.cfg.ankle_usage_reward_scale * self.step_dt,

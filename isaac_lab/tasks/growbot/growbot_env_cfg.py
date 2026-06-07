@@ -91,7 +91,7 @@ class GrowbotFlatEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 12.0
     decimation = 4                 # 200 Hz physics -> 50 Hz control
-    action_scale = 0.6             # rad offset from default stance (wide ROM)
+    action_scale = 0.8             # rad offset from default stance (very wide ROM — freedom to take big leg swings)
     action_space = 4
     observation_space = 24
     state_space = 0
@@ -135,14 +135,15 @@ class GrowbotFlatEnvCfg(DirectRLEnvCfg):
     )
 
     # command ranges (straight-line: lateral & yaw commands are zero)
-    cmd_vx_range = (0.15, 0.45)    # forward speed command [m/s]
+    cmd_vx_range = (0.25, 0.55)    # forward speed command [m/s] — pushed up: speed is a top priority
 
     # nominal upright base height [m]
     target_height = 0.235
 
     # reward scales
+    # --- TOP PRIORITIES: speed + straight line ---
     lin_vel_reward_scale = 1.5
-    forward_progress_reward_scale = 4.0       # linear: 0 when standing -> must actually move
+    forward_progress_reward_scale = 7.0       # linear: 0 when standing -> must actually move (cranked: speed first)
     yaw_rate_reward_scale = 1.0
     lateral_vel_reward_scale = -3.0
     yaw_rate_l2_reward_scale = -2.0       # directly damp turning
@@ -153,14 +154,19 @@ class GrowbotFlatEnvCfg(DirectRLEnvCfg):
     base_height_reward_scale = -10.0
     alive_reward_scale = 1.0
     joint_torque_reward_scale = -2.5e-5
-    joint_accel_reward_scale = -5.0e-7        # damp high-freq jitter (moderate)
-    joint_vel_reward_scale = -1.0e-4          # damp buzzing (moderate)
-    action_rate_reward_scale = -0.03          # punish vibrating commands (moderate)
-    feet_air_time_reward_scale = 0.6          # reward real, lifted steps
-    feet_air_time_threshold = 0.25            # min step duration to count (longer = more deliberate)
-    foot_slip_reward_scale = -0.15            # punish scuffing/sliding feet (moderate)
+    # --- jitter control: loosen blanket motion-MAGNITUDE penalties (they trap
+    #     the robot in a tiny-shuffle vibration), keep the TARGETED guards that
+    #     punish high-frequency reversals & sliding (the actual jitter signature) ---
+    joint_accel_reward_scale = -2.0e-7        # loosened: don't suppress big leg swings
+    joint_vel_reward_scale = -2.0e-5          # loosened: let the legs move fast through a real stride
+    action_rate_reward_scale = -0.04          # KEEP firm: punishes vibrating/reversing commands = jitter
+    # --- BEHAVIOURS TO REINFORCE: air time + bigger steps + single-support gait ---
+    feet_air_time_reward_scale = 1.5          # strongly reward real, lifted swing steps
+    feet_air_time_threshold = 0.25            # min step duration to count (a buzz can't accumulate this)
+    foot_slip_reward_scale = -0.25            # KEEP firm: kill buzz-and-slide scuffing of the planted foot
     undesired_contact_reward_scale = -1.0
     # gait shaping
+    single_stance_reward_scale = 1.0          # exactly one foot planted while moving -> alternating gait, kills the both-feet buzz
     gait_symmetry_reward_scale = -1.0         # small: keep L/R anti-phase mirror -> straight, coordinated
-    step_stride_reward_scale = 0.3            # reward wide alternating hip excursion -> larger, deliberate steps
-    ankle_usage_reward_scale = 0.3            # reward alternating ankle motion -> actually use the ankles
+    step_stride_reward_scale = 1.0            # reward WIDE alternating hip excursion -> larger, deliberate steps
+    ankle_usage_reward_scale = 0.6            # reward alternating ankle motion -> ankle keeps the planted foot flat / push-off

@@ -42,7 +42,7 @@ from isaaclab.sim import SimulationContext, SimulationCfg
 # reuse the exact robot articulation cfg used for training
 sys.path.insert(
     0,
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks", "growbot"),
 )
 from growbot_env_cfg import GROWBOT_CFG, GrowbotFlatEnvCfg  # noqa: E402
 
