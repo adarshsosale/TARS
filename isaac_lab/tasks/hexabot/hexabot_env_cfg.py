@@ -59,8 +59,12 @@ HEXABOT_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        # spawn a touch above the 72 mm standing height so the feet settle, not clip
-        pos=(0.0, 0.0, 0.085),
+        # spawn AT the 72 mm standing height. Spawning higher (was 0.085) makes the
+        # body free-fall on reset and the underdamped legs overshoot DOWN to ~0.023 m
+        # within ~5 control steps — below the 0.035 m too_low death floor — so every
+        # episode died during the spawn transient before the policy could act. The
+        # passive robot settles to ~0.070 m, so spawning here removes the drop.
+        pos=(0.0, 0.0, 0.072),
         joint_pos={
             "coxa_.*": 0.0,
             "femur_.*": _STANCE_FEMUR,
@@ -157,10 +161,31 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     )
 
     # command ranges (straight-line: lateral & yaw commands are zero)
-    cmd_vx_range = (0.10, 0.30)    # forward speed command [m/s]
+    cmd_vx_range = (0.10, 0.30)    # forward speed command [m/s] (upper used by curriculum)
+
+    # --- stand-first curriculum ---------------------------------------------
+    # The robot otherwise discovers a belly-crawl: lie flat and wiggle for a sliver
+    # of forward reward at minimal effort/risk. We starve that optimum by making it
+    # learn to STAND TALL before it is ever asked to move: command vx=0 for the
+    # first `curriculum_stand_steps` control-steps, then ramp the upper vx command
+    # from 0 to cmd_vx_range[1] over `curriculum_ramp_steps`. Counted in control
+    # steps (~24 per training iteration).
+    curriculum_stand_steps = 2000     # ~83 iters of pure standing
+    curriculum_ramp_steps = 4000      # ~166 iters ramping 0 -> full speed
 
     # nominal upright base-centre height [m] (the hexapod stands ~72 mm)
     target_height = 0.072
+
+    # --- belly / leg-posture geometry ---------------------------------------
+    belly_half_thickness = 0.023      # base centre -> underbelly (BODY_H 46 mm / 2)
+    belly_clearance_min = 0.045       # underbelly must stay >= 45 mm off the ground
+    claw_offset = 0.135               # tibia-local x to the claw tip (= L_TIBIA)
+    support_target = 0.045            # belly->foot vertical gap rewarded up to [m]
+
+    # post-reset settling grace: suppress death terminations for this many control
+    # steps after a reset so a residual spawn transient can't kill the episode
+    # before the policy acts (15 steps = 0.3 s; episodes run to 600 steps).
+    settle_steps = 15
 
     # reward scales
     # --- track a forward base velocity, go straight ---
@@ -174,7 +199,10 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     ang_vel_reward_scale = -0.05
     flat_orientation_reward_scale = -2.5
     base_height_reward_scale = -8.0
-    alive_reward_scale = 0.5
+    alive_reward_scale = 1.0                   # survival must clearly pay (was 0.5)
+    # --- stand tall, don't belly-crawl ---
+    belly_clearance_reward_scale = -50.0      # strong one-sided penalty: belly near ground
+    foot_support_reward_scale = 20.0          # reward feet planted well below the belly
     # --- effort / smoothness ---
     joint_torque_reward_scale = -2.0e-5
     joint_accel_reward_scale = -2.5e-7

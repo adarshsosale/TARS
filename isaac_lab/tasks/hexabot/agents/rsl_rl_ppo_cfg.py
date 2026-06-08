@@ -13,7 +13,7 @@ class HexabotFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 50
     experiment_name = "hexabot_flat_direct"
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
+        init_noise_std=0.8,   # was 1.0: ±0.4 rad explore noise (×action_scale) instead of ±0.5
         actor_obs_normalization=False,
         critic_obs_normalization=False,
         actor_hidden_dims=[128, 128, 128],
@@ -24,7 +24,7 @@ class HexabotFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.005,
+        entropy_coef=0.01,   # was 0.005: keep exploring; noise std collapsed to 0.06 by iter ~16
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-3,

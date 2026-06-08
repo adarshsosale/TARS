@@ -10,6 +10,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor
+from isaaclab.utils.math import quat_apply
 
 from .hexabot_env_cfg import HexabotFlatEnvCfg
 
@@ -26,6 +27,15 @@ class HexabotEnv(DirectRLEnv):
         # commands: [vx, vy, yaw_rate]; vy & yaw are kept at 0 (straight-line)
         self._commands = torch.zeros(self.num_envs, 3, device=self.device)
 
+        # control steps elapsed since each env was last reset (for the settle grace)
+        self._steps_since_reset = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # global control-step counter that drives the stand-first curriculum
+        self._step_count = 0
+        # tibia-local offset to the claw tip (for the foot-below-belly reward)
+        self._claw_offset_local = torch.tensor(
+            [self.cfg.claw_offset, 0.0, 0.0], device=self.device
+        ).view(1, 1, 3)
+
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
@@ -39,6 +49,8 @@ class HexabotEnv(DirectRLEnv):
                 "ang_vel_xy_l2",
                 "flat_orientation_l2",
                 "base_height_l2",
+                "belly_clearance",
+                "foot_support",
                 "alive",
                 "dof_torques_l2",
                 "dof_acc_l2",
@@ -123,6 +135,20 @@ class HexabotEnv(DirectRLEnv):
         flat_orientation = torch.sum(torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1)
         # base height tracking
         base_height_error = torch.square(self._robot.data.root_pos_w[:, 2] - self.cfg.target_height)
+        # underbelly height above ground (base centre minus half the body thickness)
+        belly_height = self._robot.data.root_pos_w[:, 2] - self.cfg.belly_half_thickness
+        # one-sided penalty: underbelly dropping below the min clearance (anti belly-crawl)
+        belly_clearance = torch.clamp(self.cfg.belly_clearance_min - belly_height, min=0.0)
+        # foot-below-belly support: claw tip world z via tibia pose + local claw offset
+        feet_quat = self._robot.data.body_quat_w[:, self._feet_body_ids, :]
+        feet_pos = self._robot.data.body_pos_w[:, self._feet_body_ids, :]
+        claw_w = feet_pos + quat_apply(feet_quat, self._claw_offset_local.expand_as(feet_pos))
+        foot_z = claw_w[..., 2]
+        # reward each foot sitting well below the belly (legs extended, body held high)
+        support = torch.clamp(
+            belly_height.unsqueeze(1) - foot_z, min=0.0, max=self.cfg.support_target
+        )
+        foot_support = support.mean(dim=1)
         # alive bonus
         alive = torch.ones(self.num_envs, device=self.device)
         # effort / smoothness
@@ -166,6 +192,8 @@ class HexabotEnv(DirectRLEnv):
             "ang_vel_xy_l2": ang_vel_error * self.cfg.ang_vel_reward_scale * self.step_dt,
             "flat_orientation_l2": flat_orientation * self.cfg.flat_orientation_reward_scale * self.step_dt,
             "base_height_l2": base_height_error * self.cfg.base_height_reward_scale * self.step_dt,
+            "belly_clearance": belly_clearance * self.cfg.belly_clearance_reward_scale * self.step_dt,
+            "foot_support": foot_support * self.cfg.foot_support_reward_scale * self.step_dt,
             "alive": alive * self.cfg.alive_reward_scale * self.step_dt,
             "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
             "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
@@ -181,6 +209,8 @@ class HexabotEnv(DirectRLEnv):
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        self._steps_since_reset += 1
+        self._step_count += 1
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         # fell over: base-centre too low (collapsed) or tilted past ~60 deg
         too_low = self._robot.data.root_pos_w[:, 2] < 0.035
@@ -190,6 +220,9 @@ class HexabotEnv(DirectRLEnv):
             torch.max(torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1)[0] > 1.0, dim=1
         )
         died = too_low | tilted | base_contact
+        # suppress deaths during the post-reset settling transient so the policy
+        # gets to act before a spawn wobble can terminate the episode
+        died = died & (self._steps_since_reset > self.cfg.settle_steps)
         return died, time_out
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
@@ -201,11 +234,19 @@ class HexabotEnv(DirectRLEnv):
             self.episode_length_buf[:] = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
+        self._steps_since_reset[env_ids] = 0
 
-        # straight-line forward command: vx random in range, vy=0, yaw=0
+        # straight-line forward command (vy=0, yaw=0). Stand-first curriculum:
+        # vx=0 until curriculum_stand_steps, then ramp the upper vx command up.
         n = len(env_ids)
         self._commands[env_ids] = 0.0
-        self._commands[env_ids, 0] = torch.empty(n, device=self.device).uniform_(*self.cfg.cmd_vx_range)
+        if self._step_count < self.cfg.curriculum_stand_steps:
+            vx_max = 0.0
+        else:
+            frac = min(1.0, (self._step_count - self.cfg.curriculum_stand_steps) / self.cfg.curriculum_ramp_steps)
+            vx_max = frac * self.cfg.cmd_vx_range[1]
+        if vx_max > 0.0:
+            self._commands[env_ids, 0] = torch.empty(n, device=self.device).uniform_(0.0, vx_max)
 
         # reset robot state with small joint noise for exploration
         joint_pos = self._robot.data.default_joint_pos[env_ids].clone()

@@ -2,3 +2,5 @@ external/
 logs/
 *.pyc
 outputs/
+*.log
+log
