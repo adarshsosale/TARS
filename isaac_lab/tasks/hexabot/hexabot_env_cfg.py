@@ -76,20 +76,22 @@ HEXABOT_CFG = ArticulationCfg(
         # MG996R: ~1.08 N·m stall @6V, ~6.16 rad/s no-load. Stiffness ~ stall/0.1
         # => ~10 N·m/rad; effort headroom bumped modestly above stock so the legs
         # can drive real swings and push-off without saturating.
+        # damping 0.4 -> 0.5: light smoothing only. (1.0 over-resisted push-off and the
+        # robot marched in place; the phase-clock gait reward now handles smoothness/jitter.)
         "coxa": ImplicitActuatorCfg(
             joint_names_expr=["coxa_.*"],
             effort_limit_sim=1.6, velocity_limit_sim=6.16,
-            stiffness=10.0, damping=0.4,
+            stiffness=10.0, damping=0.5,
         ),
         "femur": ImplicitActuatorCfg(
             joint_names_expr=["femur_.*"],
             effort_limit_sim=1.6, velocity_limit_sim=6.16,
-            stiffness=12.0, damping=0.4,
+            stiffness=12.0, damping=0.5,
         ),
         "tibia": ImplicitActuatorCfg(
             joint_names_expr=["tibia_.*"],
             effort_limit_sim=1.6, velocity_limit_sim=6.16,
-            stiffness=12.0, damping=0.4,
+            stiffness=12.0, damping=0.5,
         ),
     },
 )
@@ -119,7 +121,7 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     decimation = 4                 # 200 Hz physics -> 50 Hz control
     action_scale = 0.5             # rad offset from the standing stance
     action_space = 18              # 6 legs x (coxa, femur, tibia)
-    observation_space = 66         # 3+3+3 (root) + 3 (cmd) + 18+18 (joint pos/vel) + 18 (actions)
+    observation_space = 68         # 3+3+3 (root) + 3 (cmd) + 18+18 (joint pos/vel) + 18 (actions) + 2 (gait clock sin/cos)
     state_space = 0
 
     # simulation
@@ -189,12 +191,19 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
 
     # reward scales
     # --- track a forward base velocity, go straight ---
-    lin_vel_reward_scale = 2.0
-    forward_progress_reward_scale = 3.0       # linear: 0 when standing -> must actually move
+    # exp velocity-tracking: SATURATING and farmable by standing. With small commands
+    # (avg ~0.15 m/s) a frozen robot scores exp(-0.15^2/0.25)=0.91 of the max, so at the
+    # old scale 2.0 this term alone paid ~1.8 -- the single biggest reward -- for standing
+    # still and it drowned forward_progress (~0.15 when frozen). Demoted to a minor speed-
+    # regulation term so the linear, standstill-zero forward_progress below is the dominant
+    # translation driver.
+    lin_vel_reward_scale = 0.5
+    forward_progress_reward_scale = 12.0      # linear, un-saturated, 0 at standstill -> the real translation driver
     yaw_rate_reward_scale = 0.5
     lateral_vel_reward_scale = -2.0
-    yaw_rate_l2_reward_scale = -1.0
+    yaw_rate_l2_reward_scale = -1.5          # gentle: -3.0 (always-on) punished stand-phase exploration & slowed standing 2x. World-frame forward_progress is the real anti-circle fix.
     lateral_pos_reward_scale = -2.0           # stay on the spawn x-axis (straight line)
+    heading_reward_scale = -4.0               # hold +x heading (stops the steady veer/circle that yaw-rate misses)
     z_vel_reward_scale = -1.0
     ang_vel_reward_scale = -0.05
     flat_orientation_reward_scale = -2.5
@@ -205,16 +214,29 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     foot_support_reward_scale = 20.0          # reward feet planted well below the belly
     # --- effort / smoothness ---
     joint_torque_reward_scale = -2.0e-5
-    joint_accel_reward_scale = -5.0e-7        # was -2.5e-7: ~A^2 f^4, kills high-freq jitter, spares slow waves
-    action_rate_reward_scale = -0.01
+    joint_accel_reward_scale = -2.5e-7        # NB: doubling this to -5e-7 broke the stand phase (robot stopped correcting)
+    action_rate_reward_scale = -0.015        # -0.04 over-suppressed motion (robot nearly stopped); modest value
     joint_limit_reward_scale = -1.0           # discourage slamming joint limits
     # --- stepping behaviour ---
     feet_air_time_reward_scale = 2.5          # was 1.0: longer swings -> slower cadence, bigger strides
     feet_air_time_threshold = 0.2             # min step duration to count [s]
-    foot_slip_reward_scale = -0.1             # kill planted-foot scuffing
+    foot_slip_reward_scale = -0.2             # gentle bump from -0.1 (-0.4 always-on slowed standing); foot_plant reward handles grip
     undesired_contact_reward_scale = -1.0     # body/coxa/femur must not touch ground
     # --- coordinated symmetric tetrapod gait (motion-gated) ---
-    tetrapod_contact_reward_scale = 1.5       # keep exactly 4 of 6 feet planted while walking
+    tetrapod_contact_reward_scale = 3.0       # was 1.5: pin exactly 4 of 6 feet planted. The robot
+                                              # had abandoned the stance (tetrapod 0.82->0.17), teetering
+                                              # on tucked legs; strengthen alongside the gait_phase
+                                              # stance-violation penalty to rebuild the planted tetrapod.
     gait_symmetry_reward_scale = 1.5          # the planted/lifted feet form a left-right mirror
     foot_clearance_reward_scale = 4.0         # big deliberate swing lifts (anti-skitter)
-    foot_clearance_target = 0.04              # swing-foot apex height rewarded up to [m]
+    foot_clearance_target = 0.025             # swing-foot apex height rewarded up to [m] (0.04 too high -> unstable)
+    # --- phase-clock periodic gait (the time reference that kills jitter) ---
+    gait_frequency = 1.2                      # was 1.5: slower clock -> bigger, more deliberate wave (0.83 s cycle)
+    gait_swing_fraction = 0.30                # fraction of the cycle a leg is scheduled to swing
+    gait_phase_reward_scale = 3.0             # net term: +correctly LIFTING scheduled-swing feet, -lifting
+                                              # scheduled-stance feet (over-lifting). Was 3.5 and farmed to
+                                              # 1.73 as the top reward by air-stepping; the stance-violation
+                                              # penalty now makes over-lifting cost reward. Still 0 for a static stance.
+    # foot plant angle: stance feet point steeply down so the claw digs in (anti-slip)
+    foot_plant_reward_scale = 0.6             # reward steep stance feet
+    foot_plant_target = 0.85                  # sin(angle below horizontal) target ~= 58-65 deg

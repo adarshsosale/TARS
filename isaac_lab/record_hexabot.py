@@ -51,6 +51,7 @@ ACTION_SCALE = CFG.action_scale          # 0.5
 TARGET_HEIGHT = CFG.target_height
 DECIM = CFG.decimation                   # 4 -> 50 Hz control
 N_ACTIONS = CFG.action_space             # 18
+GAIT_FREQ = CFG.gait_frequency           # gait clock advances at this rate (must match training)
 
 
 def main():
@@ -97,7 +98,11 @@ def main():
     command = torch.tensor([[args_cli.cmd_vx, 0.0, 0.0]], device=sim.device)
     last_action = torch.zeros(1, N_ACTIONS, device=sim.device)
 
-    def build_obs():
+    def build_obs(gait_phase):
+        clock = torch.tensor(
+            [[np.sin(2.0 * np.pi * gait_phase), np.cos(2.0 * np.pi * gait_phase)]],
+            device=sim.device, dtype=torch.float32,
+        )
         return torch.cat(
             [
                 robot.data.root_lin_vel_b,
@@ -107,6 +112,7 @@ def main():
                 robot.data.joint_pos - robot.data.default_joint_pos,
                 robot.data.joint_vel,
                 last_action,
+                clock,
             ],
             dim=-1,
         )
@@ -120,11 +126,14 @@ def main():
     x0 = robot.data.root_pos_w[0, 0].item()
 
     n_control = int(args_cli.seconds * phys_hz / DECIM)   # 50 Hz control steps
+    control_dt = DECIM / phys_hz                            # 0.02 s
+    gait_phase = 0.0
     frames = []
     for c in range(n_control):
         with torch.inference_mode():
-            action = policy(build_obs())
+            action = policy(build_obs(gait_phase))
         last_action = action.clone()
+        gait_phase = (gait_phase + GAIT_FREQ * control_dt) % 1.0
         target = ACTION_SCALE * action + default_q
         for _ in range(DECIM):
             robot.set_joint_position_target(target)

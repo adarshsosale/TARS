@@ -31,10 +31,14 @@ class HexabotEnv(DirectRLEnv):
         self._steps_since_reset = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         # global control-step counter that drives the stand-first curriculum
         self._step_count = 0
+        # per-env gait clock phase in [0,1); random per episode so envs decorrelate
+        self._gait_phase = torch.rand(self.num_envs, device=self.device)
         # tibia-local offset to the claw tip (for the foot-below-belly reward)
         self._claw_offset_local = torch.tensor(
             [self.cfg.claw_offset, 0.0, 0.0], device=self.device
         ).view(1, 1, 3)
+        # world +x unit (spawn forward heading) for the heading-hold reward
+        self._world_x = torch.tensor([1.0, 0.0, 0.0], device=self.device)
 
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -44,6 +48,7 @@ class HexabotEnv(DirectRLEnv):
                 "track_ang_vel_z_exp",
                 "lateral_vel_l2",
                 "yaw_rate_l2",
+                "heading",
                 "lateral_pos_l2",
                 "lin_vel_z_l2",
                 "ang_vel_xy_l2",
@@ -62,6 +67,8 @@ class HexabotEnv(DirectRLEnv):
                 "tetrapod_contact",
                 "gait_symmetry",
                 "foot_clearance",
+                "gait_phase",
+                "foot_plant",
             ]
         }
 
@@ -79,6 +86,15 @@ class HexabotEnv(DirectRLEnv):
         _name_to_local = {nm: i for i, nm in enumerate(feet_names)}
         self._feet_mirror_idx = torch.tensor(
             [_name_to_local[_mirror(nm)] for nm in feet_names], device=self.device, dtype=torch.long
+        )
+
+        # Per-leg gait phase offsets for a rear->mid->front symmetric wave: legs in a
+        # mirror pair share an offset (move together -> symmetric), and the three pairs
+        # are offset by 1/3 so exactly one pair swings at a time (>=4 feet always planted).
+        # foot name 'tibia_<side><pos>' -> pos in {f,m,r} = front/mid/rear.
+        _pos_offset = {"r": 0.0, "m": 1.0 / 3.0, "f": 2.0 / 3.0}
+        self._leg_phase_offset = torch.tensor(
+            [_pos_offset[nm.rsplit("_", 1)[1][1]] for nm in feet_names], device=self.device
         )
         self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(["base_link", "coxa_.*", "femur_.*"])
         # robot-frame body indices for the feet (for foot-velocity / slip)
@@ -101,12 +117,16 @@ class HexabotEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone()
         self._processed_actions = self.cfg.action_scale * self._actions + self._robot.data.default_joint_pos
+        # advance the gait clock once per control step
+        self._gait_phase = (self._gait_phase + self.cfg.gait_frequency * self.step_dt) % 1.0
 
     def _apply_action(self):
         self._robot.set_joint_position_target(self._processed_actions)
 
     def _get_observations(self) -> dict:
         self._previous_actions = self._actions.clone()
+        phase = 2.0 * torch.pi * self._gait_phase
+        gait_clock = torch.stack([torch.sin(phase), torch.cos(phase)], dim=-1)
         obs = torch.cat(
             [
                 self._robot.data.root_lin_vel_b,
@@ -116,6 +136,7 @@ class HexabotEnv(DirectRLEnv):
                 self._robot.data.joint_pos - self._robot.data.default_joint_pos,
                 self._robot.data.joint_vel,
                 self._actions,
+                gait_clock,
             ],
             dim=-1,
         )
@@ -127,9 +148,11 @@ class HexabotEnv(DirectRLEnv):
             torch.square(self._commands[:, :2] - self._robot.data.root_lin_vel_b[:, :2]), dim=1
         )
         lin_vel_error_mapped = torch.exp(-lin_vel_error / 0.25)
-        # linear forward-progress reward: 0 when standing, capped at the command
+        # linear forward-progress reward: 0 when standing, capped at the command.
+        # Uses WORLD-frame +x velocity (not body-frame): a circling robot is always
+        # "forward" in its own frame and would farm this, but makes no world progress.
         forward_progress = torch.clamp(
-            torch.minimum(self._robot.data.root_lin_vel_b[:, 0], self._commands[:, 0]), min=0.0
+            torch.minimum(self._robot.data.root_lin_vel_w[:, 0], self._commands[:, 0]), min=0.0
         )
         # yaw-rate tracking (command is 0 -> go straight)
         yaw_rate_error = torch.square(self._commands[:, 2] - self._robot.data.root_ang_vel_b[:, 2])
@@ -138,6 +161,13 @@ class HexabotEnv(DirectRLEnv):
         lateral_vel = torch.square(self._robot.data.root_lin_vel_b[:, 1])
         # explicit yaw-rate penalty (don't turn)
         yaw_rate_l2 = torch.square(self._robot.data.root_ang_vel_b[:, 2])
+        # heading hold: the body's forward (+x) axis should keep pointing along world +x.
+        # Its world-y component is sin(yaw); penalizing it stops the slow steady veer that
+        # yaw-rate misses and that body-frame velocity tracking happily allows (-> circling).
+        fwd_axis_w = quat_apply(
+            self._robot.data.root_quat_w, self._world_x.expand(self.num_envs, 3)
+        )
+        heading_err = torch.square(fwd_axis_w[:, 1])
         # lateral position drift off the spawn x-axis (enforces straight line)
         lateral_pos = torch.square(
             self._robot.data.root_pos_w[:, 1] - self._terrain.env_origins[:, 1]
@@ -205,6 +235,34 @@ class HexabotEnv(DirectRLEnv):
         foot_clearance = torch.sum(
             torch.clamp(foot_z, min=0.0, max=self.cfg.foot_clearance_target) * swing, dim=1
         ) * moving
+        # phase-clock schedule: each leg has a short swing window (should be LIFTED) then a
+        # stance window (should be planted). Reward only correctly lifting the feet that are
+        # scheduled to swing -> a static all-feet-planted robot scores 0 and cannot farm this
+        # by standing still. (Stance correctness is already covered by tetrapod_contact /
+        # foot_support; the old `feet_contact == sched_stance` match paid ~70% to a frozen
+        # all-planted stance, which reinforced the no-movement optimum.)
+        local_phase = (self._gait_phase.unsqueeze(1) - self._leg_phase_offset.unsqueeze(0)) % 1.0
+        sched_swing = local_phase < self.cfg.gait_swing_fraction
+        sched_stance = ~sched_swing
+        n_sched_swing = sched_swing.float().sum(dim=1).clamp(min=1.0)
+        n_sched_stance = sched_stance.float().sum(dim=1).clamp(min=1.0)
+        # reward feet that lift exactly when scheduled to swing ...
+        swing_correct = ((~feet_contact) & sched_swing).float().sum(dim=1) / n_sched_swing
+        # ... MINUS feet that lift while scheduled to be PLANTED. Without this penalty the
+        # robot farmed the swing reward by lifting everything on the clock and teetering on
+        # tucked legs (tetrapod_contact collapsed 0.82 -> 0.17, forward_progress stalled at
+        # 0.58). The net term forces it to keep the scheduled-stance feet down -> a real
+        # >=4-foot planted tetrapod wave. A static all-planted robot still scores 0 (no
+        # scheduled-swing feet lifted, no stance violations) so the stand phase is unharmed.
+        stance_violation = ((~feet_contact) & sched_stance).float().sum(dim=1) / n_sched_stance
+        gait_phase = (swing_correct - stance_violation) * moving
+        # foot plant angle: stance feet should point steeply DOWN (claw digs in for grip),
+        # not lie flat and drag/slip. (knee_z - claw_z)/tibia_len = sin(angle below horizontal),
+        # ~0.91 at 65 deg. Reward only feet in contact, capped at the target steepness.
+        foot_downness = torch.clamp((feet_pos[..., 2] - foot_z) / self.cfg.claw_offset, min=0.0, max=1.0)
+        foot_plant = torch.sum(
+            torch.clamp(foot_downness, max=self.cfg.foot_plant_target) * feet_contact.float(), dim=1
+        ) * moving
         # undesired contacts (body / coxa / femur hitting the ground)
         is_contact = (
             torch.max(torch.norm(net_contact_forces[:, :, self._undesired_contact_body_ids], dim=-1), dim=1)[0] > 1.0
@@ -217,6 +275,7 @@ class HexabotEnv(DirectRLEnv):
             "track_ang_vel_z_exp": yaw_rate_error_mapped * self.cfg.yaw_rate_reward_scale * self.step_dt,
             "lateral_vel_l2": lateral_vel * self.cfg.lateral_vel_reward_scale * self.step_dt,
             "yaw_rate_l2": yaw_rate_l2 * self.cfg.yaw_rate_l2_reward_scale * self.step_dt,
+            "heading": heading_err * moving * self.cfg.heading_reward_scale * self.step_dt,
             "lateral_pos_l2": lateral_pos * self.cfg.lateral_pos_reward_scale * self.step_dt,
             "lin_vel_z_l2": z_vel_error * self.cfg.z_vel_reward_scale * self.step_dt,
             "ang_vel_xy_l2": ang_vel_error * self.cfg.ang_vel_reward_scale * self.step_dt,
@@ -235,6 +294,8 @@ class HexabotEnv(DirectRLEnv):
             "tetrapod_contact": tetrapod_contact * self.cfg.tetrapod_contact_reward_scale * self.step_dt,
             "gait_symmetry": gait_symmetry * self.cfg.gait_symmetry_reward_scale * self.step_dt,
             "foot_clearance": foot_clearance * self.cfg.foot_clearance_reward_scale * self.step_dt,
+            "gait_phase": gait_phase * self.cfg.gait_phase_reward_scale * self.step_dt,
+            "foot_plant": foot_plant * self.cfg.foot_plant_reward_scale * self.step_dt,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         for key, value in rewards.items():
@@ -268,6 +329,7 @@ class HexabotEnv(DirectRLEnv):
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
         self._steps_since_reset[env_ids] = 0
+        self._gait_phase[env_ids] = torch.rand(len(env_ids), device=self.device)
 
         # straight-line forward command (vy=0, yaw=0). Stand-first curriculum:
         # vx=0 until curriculum_stand_steps, then ramp the upper vx command up.
