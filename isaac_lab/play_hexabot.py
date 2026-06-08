@@ -25,8 +25,10 @@ _RSL_SCRIPTS = os.path.abspath(
 )
 sys.path.insert(0, _RSL_SCRIPTS)
 
-# Add our tasks dir so `import hexabot` resolves.
+# Add our tasks dir so `import hexabot` resolves, and the repo root so
+# `import isaac_lab.interfaces` (the frozen inter-layer interface) resolves.
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "isaac_lab", "tasks"))
+sys.path.insert(0, _PROJECT_ROOT)
 
 import argparse
 

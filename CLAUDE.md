@@ -152,6 +152,46 @@ Hexabot change only on a full run past the breakout (~iter 550+).**
 
 ---
 
+## Milestone 0 — two-layer control stack (CURRENT architecture)
+
+A goal→velocity→gait stack. **Read `isaac_lab/tasks/hexabot/README.md` first.** This
+RE-ARCHITECTED the locomotion layer; several notes above describe the OLD direct-action
+policy and are kept as history (the failure-mode *lessons* still hold; the obs/action
+*shapes* do not).
+
+**Frozen interface** (`isaac_lab/interfaces/velocity_command.py`): `VelocityCommand(vx,vy,yaw)`
++ canonical ranges. The ONLY contract between the two layers; both import it (the loco
+cfg derives `cmd_vx_range` from `VX_RANGE`). Entry-point scripts add the repo root to
+`sys.path` so `import isaac_lab.interfaces` resolves.
+
+**Locomotion (Layer 1) — changed vs the old policy:**
+- **Obs is proprioceptive-ONLY, 75-d, NO base linear velocity** (not measurable on the real
+  robot). Layout: grav(3) ang_vel(3) cmd(3) jpos(18) jvel(18) prev_act(18) cpg_phase(12)
+  + dormant `n_height_scan`(0) height-scan seam. `symmetry.py` matches this layout.
+- **Action MODULATES a CPG** (`cpg.py`), not joint offsets: per-leg `[d_freq,d_coxa_amp,d_lift]`.
+  **Zero action == the analytical tripod gait** (`tripod_gait.py:gait_pose`) scaled by command
+  speed (`cpg_v_ref`); at vx=0 it holds the standing stance, so the CPG STRUCTURALLY prevents
+  belly-crawl (stand curriculum shortened to 500 steps). The CPG action mirror is a leg-swap
+  with NO sign flip (params are sign-invariant) — unlike the old joint-offset coxa flip.
+- **Imitation reward** (annealing): `-(CPG(action)-CPG(0))²`, weight 1→0 over `imitation_anneal_steps`,
+  tied to curriculum. + BC warm-start (`bc_warmstart.py`, `train_hexabot.py --bc_warmstart`).
+  Reference, NOT residual (hard constraint).
+- **Domain randomization ON from start:** friction/mass/actuator-gains (`EventCfg`) +
+  actuator latency / control-rate jitter / IMU+obs noise (`DomainRandCfg`, applied in the env step).
+- `record_hexabot.py` rebuilds the new obs + imports `cpg.py` so it can't drift from training.
+
+**Navigation (Layer 2) — hand-coded placeholder, real plumbing:** `nav/go_to_goal.py`
+(goal→VelocityCommand, computes dormant yaw), `nav/nav_goal_cfg.py` (goal-rel obs + dormant
+zeroed lidar slot + dense progress reward + inert collision/path terms), `run_nav_demo.py`
+(end-to-end both layers over the interface). No nav RL this milestone.
+
+**Verified (2026-06-09):** `test_cpg.py` passes (zero-action==analytical gait, mirrors are
+involutions); Isaac smoke run (256 envs, 5 iters, --bc_warmstart) — actor/critic in_features=75,
+action 18, BC mse→2e-5, symmetry loss active, all reward terms log. Full 1000-iter BC+PPO run
+launched. The exit-1 on smoke is only the known `simulation_app.close()` hang (pkilled).
+
+---
+
 ## Checkpoint for other agents
 
 After all fixes, a 60-iter smoke run showed: ep length 5→112 and rising, deaths 820→3/iter. The hardware/stance/actuators are fine — the original collapse was spawn-death + last-checkpoint export, not the robot.

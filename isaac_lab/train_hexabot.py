@@ -24,8 +24,10 @@ _RSL_SCRIPTS = os.path.abspath(
 )
 sys.path.insert(0, _RSL_SCRIPTS)
 
-# Add our tasks dir so `import hexabot` resolves.
+# Add our tasks dir so `import hexabot` resolves, and the repo root so
+# `import isaac_lab.interfaces` (the frozen inter-layer interface) resolves.
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "isaac_lab", "tasks"))
+sys.path.insert(0, _PROJECT_ROOT)
 
 # ── everything below is identical to IsaacLab's train.py ─────────────────────
 
@@ -56,6 +58,12 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
+parser.add_argument(
+    "--bc_warmstart",
+    action="store_true",
+    default=False,
+    help="Behaviour-clone the analytical tripod gait into the policy before PPO (see bc_warmstart.py).",
+)
 parser.add_argument(
     "--ray-proc-id", "-rid", type=int, default=None, help="Automatically configured by Ray integration, otherwise None."
 )
@@ -212,6 +220,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+
+    # Optional BC warm-start: pretrain the actor to ride the analytical tripod gait
+    # (zero CPG action) before PPO takes over. Skipped when resuming a checkpoint.
+    if args_cli.bc_warmstart and not agent_cfg.resume:
+        from hexabot.bc_warmstart import bc_pretrain
+
+        bc_pretrain(runner, env, env_cfg)
 
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
