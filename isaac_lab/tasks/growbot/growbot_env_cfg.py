@@ -53,14 +53,14 @@ GROWBOT_CFG = ArticulationCfg(
     actuators={
         "hips": ImplicitActuatorCfg(
             joint_names_expr=["hip_left", "hip_right"],
-            effort_limit_sim=1.08,
+            effort_limit_sim=2.16,     # 2x stock MG996R torque (was 1.08) — drive bigger/faster leg swings
             velocity_limit_sim=6.16,
             stiffness=10.0,
             damping=0.3,
         ),
         "ankles": ImplicitActuatorCfg(
             joint_names_expr=["ankle_left", "ankle_right"],
-            effort_limit_sim=1.33,
+            effort_limit_sim=2.66,     # 2x stock MG996R torque (was 1.33) — stronger push-off / foot-flat hold
             velocity_limit_sim=5.0,
             stiffness=10.0,
             damping=0.3,
@@ -91,7 +91,7 @@ class GrowbotFlatEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 12.0
     decimation = 4                 # 200 Hz physics -> 50 Hz control
-    action_scale = 0.8             # rad offset from default stance (very wide ROM — freedom to take big leg swings)
+    action_scale = 1.5             # rad offset from default stance (very wide ROM — freedom to take big leg swings)
     action_space = 4
     observation_space = 24
     state_space = 0
@@ -142,12 +142,12 @@ class GrowbotFlatEnvCfg(DirectRLEnvCfg):
 
     # reward scales
     # --- TOP PRIORITIES: speed + straight line ---
-    lin_vel_reward_scale = 1.5
-    forward_progress_reward_scale = 7.0       # linear: 0 when standing -> must actually move (cranked: speed first)
+    lin_vel_reward_scale = 3
+    forward_progress_reward_scale = 4.0       # linear: 0 when standing -> must actually move (cranked: speed first)
     yaw_rate_reward_scale = 1.0
     lateral_vel_reward_scale = -3.0
     yaw_rate_l2_reward_scale = -2.0       # directly damp turning
-    lateral_pos_reward_scale = -8.0       # stay on the spawn x-axis (straight line)
+    lateral_pos_reward_scale = -5.0       # stay on the spawn x-axis (straight line)
     z_vel_reward_scale = -1.0
     ang_vel_reward_scale = -0.05
     flat_orientation_reward_scale = -5.0
@@ -161,12 +161,12 @@ class GrowbotFlatEnvCfg(DirectRLEnvCfg):
     joint_vel_reward_scale = -2.0e-5          # loosened: let the legs move fast through a real stride
     action_rate_reward_scale = -0.04          # KEEP firm: punishes vibrating/reversing commands = jitter
     # --- BEHAVIOURS TO REINFORCE: air time + bigger steps + single-support gait ---
-    feet_air_time_reward_scale = 1.5          # strongly reward real, lifted swing steps
+    feet_air_time_reward_scale = 8          # strongly reward real, lifted swing steps
     feet_air_time_threshold = 0.25            # min step duration to count (a buzz can't accumulate this)
     foot_slip_reward_scale = -0.25            # KEEP firm: kill buzz-and-slide scuffing of the planted foot
     undesired_contact_reward_scale = -1.0
     # gait shaping
     single_stance_reward_scale = 1.0          # exactly one foot planted while moving -> alternating gait, kills the both-feet buzz
     gait_symmetry_reward_scale = -1.0         # small: keep L/R anti-phase mirror -> straight, coordinated
-    step_stride_reward_scale = 1.0            # reward WIDE alternating hip excursion -> larger, deliberate steps
-    ankle_usage_reward_scale = 0.6            # reward alternating ankle motion -> ankle keeps the planted foot flat / push-off
+    step_stride_reward_scale = 3            # reward WIDE alternating hip excursion -> larger, deliberate steps
+    ankle_usage_reward_scale = 4            # reward alternating ankle motion -> ankle keeps the planted foot flat / push-off
