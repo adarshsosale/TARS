@@ -1,0 +1,91 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers.
+# SPDX-License-Identifier: BSD-3-Clause
+"""Standalone correctness checks for the CPG + symmetry mirror (no Isaac needed).
+
+Run in the conda env (torch only):  python isaac_lab/tasks/hexabot/test_cpg.py
+
+Verifies:
+  1. Zero action (speed_scale=1) reproduces the analytical tripod gait
+     `tripod_gait.gait_pose` joint targets exactly (the contract that makes BC +
+     the imitation reward well-defined).
+  2. speed_scale=0 collapses to the standing stance (coxa 0, femur/tibia at stance).
+  3. The action / CPG-phase mirror permutations are involutions.
+"""
+
+import math
+import sys
+from types import SimpleNamespace
+
+import torch
+
+sys.path.insert(0, __file__.rsplit("/", 1)[0])
+from cpg import LEG_AZ_DEG, LEG_ORDER, STANCE_FEMUR, STANCE_TIBIA, TRIPOD_A, HexabotCPG  # noqa: E402
+
+
+def _ref_gait_pose(phase, coxa_amp, lift):
+    """Reference: a faithful copy of tripod_gait.gait_pose (which can't be imported
+    without launching Isaac). Returns {leg: (qc, qf, qt)}."""
+    pose = {}
+    for leg, az in LEG_AZ_DEG.items():
+        th = math.radians(az)
+        ph = phase if leg in TRIPOD_A else (phase + 0.5) % 1.0
+        if ph < 0.5:
+            s = ph / 0.5
+            qc = coxa_amp * math.sin(th) * (2 * s - 1)
+            qf, qt = STANCE_FEMUR, STANCE_TIBIA
+        else:
+            s = (ph - 0.5) / 0.5
+            qc = coxa_amp * math.sin(th) * (1 - 2 * s)
+            k = math.sin(math.pi * s)
+            qf = STANCE_FEMUR - lift * k
+            qt = STANCE_TIBIA + 0.4 * lift * k
+        pose[leg] = (qc, qf, qt)
+    return pose
+
+
+def main():
+    dev = "cpu"
+    cfg = SimpleNamespace(
+        cpg_f_base=1.0, cpg_coxa_amp=0.26, cpg_lift=0.55,
+        cpg_kf=0.5, cpg_kmu=0.5, cpg_klift=0.6, cpg_coupling_strength=2.0,
+    )
+    # joint names in a deliberately scrambled order to test the name-based mapping
+    joint_names = [f"{seg}_{lg}" for seg in ("femur", "tibia", "coxa") for lg in ("rm", "lf", "rr", "lm", "rf", "lr")]
+    cpg = HexabotCPG(joint_names, num_envs=1, device=dev, cfg=cfg)
+
+    psi = {lg: (0.0 if lg in TRIPOD_A else 0.5) for lg in LEG_ORDER}
+    max_err = 0.0
+    for phase in [0.0, 0.13, 0.27, 0.5, 0.62, 0.81, 0.99]:
+        # drive the CPG phase to a known global phase
+        cpg.theta[0] = torch.tensor([2 * math.pi * ((phase + psi[lg]) % 1.0) for lg in LEG_ORDER])
+        tgt = cpg.joint_targets(torch.zeros(1, 18), speed_scale=1.0)[0]
+        ref = _ref_gait_pose(phase, 0.26, 0.55)
+        for li, lg in enumerate(LEG_ORDER):
+            qc = tgt[cpg._coxa_idx[li]].item()
+            qf = tgt[cpg._femur_idx[li]].item()
+            qt = tgt[cpg._tibia_idx[li]].item()
+            rqc, rqf, rqt = ref[lg]
+            max_err = max(max_err, abs(qc - rqc), abs(qf - rqf), abs(qt - rqt))
+    assert max_err < 1e-5, f"CPG != analytical gait, max_err={max_err}"
+    print(f"[OK] zero-action == analytical tripod gait (max joint err {max_err:.2e} rad)")
+
+    # speed_scale=0 -> standing stance
+    cpg.theta[0] = torch.rand(6) * 2 * math.pi
+    tgt0 = cpg.joint_targets(torch.zeros(1, 18), speed_scale=0.0)[0]
+    for li in range(6):
+        assert abs(tgt0[cpg._coxa_idx[li]].item()) < 1e-6
+        assert abs(tgt0[cpg._femur_idx[li]].item() - STANCE_FEMUR) < 1e-6
+        assert abs(tgt0[cpg._tibia_idx[li]].item() - STANCE_TIBIA) < 1e-6
+    print("[OK] speed_scale=0 == standing stance")
+
+    # mirror permutations are involutions
+    a_idx = cpg.action_mirror_idx()
+    p_idx = cpg.phase_mirror_idx()
+    assert torch.equal(a_idx[a_idx], torch.arange(18)), "action mirror not an involution"
+    assert torch.equal(p_idx[p_idx], torch.arange(12)), "phase mirror not an involution"
+    print("[OK] action / phase mirror permutations are involutions")
+    print("\nALL CPG SELF-TESTS PASSED")
+
+
+if __name__ == "__main__":
+    main()

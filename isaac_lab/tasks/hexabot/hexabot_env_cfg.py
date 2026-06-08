@@ -29,6 +29,11 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
+# The locomotion layer CONSUMES the frozen Navigation->Locomotion interface; it
+# imports the canonical command ranges from the one place they are defined so the
+# two layers can never disagree on the contract (Milestone-0 hard constraint #3).
+from isaac_lab.interfaces import VX_RANGE, YAW_RANGE
+
 # Absolute path to the converted Hexabot USD (URDF -> USD via convert_urdf.py;
 # the bash pipeline runs the conversion the first time if this file is missing).
 HEXABOT_USD = "/home/adarshsosale/Workspace/Isaac RL Lab/hexabot_model/isaac/hexabot.usd"
@@ -99,19 +104,83 @@ HEXABOT_CFG = ArticulationCfg(
 
 @configclass
 class EventCfg:
-    """Startup randomization — chiefly the grippy foot/ground contact material."""
+    """Domain randomization applied by Isaac Lab's event manager.
 
+    This is half of the DR story: the *physics-side* randomization (friction,
+    mass, actuator gains) that needs sim hooks. The *signal-side* DR that lives in
+    the env step loop (actuator latency, control-rate jitter, IMU/obs noise) is in
+    `DomainRandCfg` below. All of it is ON from the start (Milestone-0 constraint
+    #4) and every range is config-exposed here.
+    """
+
+    # grippy foot/ground contact material + friction spread (sim-to-real)
     physics_material = EventTerm(
         func=mdp.randomize_rigid_body_material,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (1.0, 1.2),
-            "dynamic_friction_range": (0.8, 1.0),
+            "static_friction_range": (0.8, 1.3),
+            "dynamic_friction_range": (0.6, 1.0),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 64,
         },
     )
+    # per-env body mass spread (payload / build tolerance)
+    base_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+            "mass_distribution_params": (0.85, 1.15),  # scale
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    leg_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=[".*coxa.*", ".*femur.*", ".*tibia.*"]),
+            "mass_distribution_params": (0.9, 1.1),  # scale
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    # per-episode actuator-gain spread (servo unit-to-unit variation, wear, voltage)
+    actuator_gains = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "stiffness_distribution_params": (0.8, 1.2),  # scale of default stiffness
+            "damping_distribution_params": (0.8, 1.2),    # scale of default damping
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+
+
+@configclass
+class DomainRandCfg:
+    """Signal-side domain randomization applied inside the env step loop.
+
+    These have no Isaac event hook, so the env (`hexabot_env.py`) implements them.
+    All ranges are config so later stages can widen them. Master switch `enabled`.
+    """
+
+    enabled: bool = True
+    # actuator latency: the servo acts on a command delayed by k control steps,
+    # k ~ randint(low, high) per env, held for the episode. Models comms + servo lag.
+    actuator_latency_steps: tuple[int, int] = (0, 2)   # 0..2 steps @50 Hz = 0..40 ms
+    # control-rate jitter: the effective control dt fed to the CPG wobbles, and with
+    # `hold_prob` the previous command is reused (a dropped control tick).
+    control_dt_jitter: float = 0.1                      # +/-10% on the CPG-advance dt
+    hold_prob: float = 0.02                             # P(reuse last command this step)
+    # IMU / observation Gaussian noise (std), added in _get_observations
+    noise_gravity: float = 0.02                         # projected-gravity unit-vector noise
+    noise_ang_vel: float = 0.10                         # rad/s
+    noise_joint_pos: float = 0.01                       # rad (encoder)
+    noise_joint_vel: float = 0.15                       # rad/s
 
 
 @configclass
@@ -119,9 +188,19 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 12.0
     decimation = 4                 # 200 Hz physics -> 50 Hz control
-    action_scale = 0.5             # rad offset from the standing stance
-    action_space = 18              # 6 legs x (coxa, femur, tibia)
-    observation_space = 68         # 3+3+3 (root) + 3 (cmd) + 18+18 (joint pos/vel) + 18 (actions) + 2 (gait clock sin/cos)
+    # The policy action is NOT joint offsets — it is per-leg CPG modulation
+    # [d_freq, d_coxa_amp, d_lift] x 6 legs = 18 (see cpg.py). Zero action == the
+    # analytical tripod gait, so the analytical baseline is a *reference* the policy
+    # can leave, never a residual added on top of its output (hard constraint #2).
+    action_space = 18
+    # Proprioceptive-ONLY observation — NO base linear velocity (not measurable on
+    # the real robot, hard constraint). Layout (75):
+    #   grav(3) ang_vel(3) cmd(3) jpos-def(18) jvel(18) prev_action(18) cpg_phase(12)
+    # A dormant exteroceptive (height-scan) block of width `n_height_scan` (=0 now)
+    # is appended LAST — the seam where a terrain encoder plugs in at a later
+    # curriculum stage WITHOUT changing this shape. observation_space tracks it.
+    n_height_scan = 0              # dormant exteroceptive slot width (stage 0: empty)
+    observation_space = 75 + n_height_scan
     state_space = 0
 
     # simulation
@@ -153,8 +232,9 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=2.0, replicate_physics=True)
 
-    # events
+    # events (physics-side DR) + signal-side DR
     events: EventCfg = EventCfg()
+    domain_rand: DomainRandCfg = DomainRandCfg()
 
     # robot + contact sensor
     robot: ArticulationCfg = HEXABOT_CFG
@@ -162,8 +242,21 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Robot/.*", history_length=3, update_period=0.005, track_air_time=True
     )
 
-    # command ranges (straight-line: lateral & yaw commands are zero)
-    cmd_vx_range = (0.10, 0.30)    # forward speed command [m/s] (upper used by curriculum)
+    # command ranges from the FROZEN interface. The curriculum ramps the vx upper
+    # bound; yaw turning is introduced after the straight-walking phase. vy stays 0.
+    cmd_vx_range = VX_RANGE        # (0.0, 0.30) m/s
+    cmd_yaw_range = YAW_RANGE      # (-0.5, 0.5) rad/s — turning (stage 1)
+
+    # --- turning curriculum -------------------------------------------------
+    # Learn to walk STRAIGHT first, then introduce yaw commands so turning is
+    # built on a solid forward gait. Before yaw_curriculum_steps (after the vx
+    # ramp) every command is straight (yaw=0); after it, a fraction of episodes
+    # get a random yaw command (the rest stay straight to preserve straight-line
+    # quality). Counted in global control steps.
+    yaw_curriculum_start_steps = 6000   # ~250 iters: start turning once forward walking is solid
+    yaw_curriculum_ramp_steps = 4000    # ramp the yaw command magnitude 0 -> full
+    yaw_command_prob = 0.5              # fraction of episodes that get a (non-zero) yaw command
+    cpg_yaw_ref = 0.5                   # yaw rate [rad/s] that fully activates the gait (for speed_scale)
 
     # --- stand-first curriculum ---------------------------------------------
     # The robot otherwise discovers a belly-crawl: lie flat and wiggle for a sliver
@@ -172,8 +265,39 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     # first `curriculum_stand_steps` control-steps, then ramp the upper vx command
     # from 0 to cmd_vx_range[1] over `curriculum_ramp_steps`. Counted in control
     # steps (~24 per training iteration).
-    curriculum_stand_steps = 2000     # ~83 iters of pure standing
+    # The CPG now STRUCTURALLY prevents belly-crawl (at vx=0 the nominal stride
+    # amplitude is gated to 0 -> the robot holds the standing stance), so the long
+    # pure-stand phase the old direct-action policy needed is largely redundant.
+    # A short stand phase still lets orientation/height settle before motion.
+    curriculum_stand_steps = 500      # ~20 iters of pure standing
     curriculum_ramp_steps = 4000      # ~166 iters ramping 0 -> full speed
+    cpg_v_ref = 0.30                  # command speed [m/s] at which the nominal CPG amplitude is full
+
+    # --- CPG (central pattern generator) — the action mechanism ---------------
+    # The policy modulates these per-leg oscillators; zero action == the analytical
+    # alternating-tripod gait of hexabot_model/isaac/tripod_gait.py. See cpg.py.
+    cpg_f_base = 1.0                  # nominal stride frequency [Hz] (1.0 s cycle)
+    cpg_coxa_amp = 0.26               # nominal coxa sweep half-amplitude [rad] (tripod_gait default)
+    cpg_lift = 0.55                   # nominal swing femur-lift amplitude [rad] (tripod_gait default)
+    cpg_kf = 0.5                      # policy authority over per-leg frequency (+/-50%)
+    cpg_kmu = 0.5                     # policy authority over per-leg coxa amplitude (+/-50%)
+    cpg_klift = 0.6                   # policy authority over per-leg swing lift (+/-60%)
+    cpg_coupling_strength = 2.0       # weak pull toward the tripod phase offsets (0 = none)
+
+    # --- annealing imitation reward (reference, NOT residual) -----------------
+    # Penalize the policy's joint targets deviating from the analytical-gait targets
+    # at the current phase. Weight starts at imitation_w0 and ANNEALS to ~0 over the
+    # flat-ground curriculum (tied to curriculum progress), so the policy ends up
+    # competent but not tethered to a flat gait when terrain stages begin.
+    imitation_reward_scale = -8.0
+    imitation_anneal_steps = 8000     # control steps over which the weight decays 1 -> 0 (after the stand phase)
+
+    # --- curriculum extensibility (stage 0 = flat, obstacle-free) -------------
+    # These are INERT at stage 0; later stages turn them up WITHOUT changing the
+    # policy's observation/action shapes (the dormant height-scan / lidar slots
+    # absorb the new inputs). Wired now so the seam exists.
+    obstacle_density = 0.0            # fraction of arena occupied by obstacles (0 = none)
+    terrain_roughness = 0.0           # rough-terrain amplitude [m] (0 = flat plane)
 
     # nominal upright base-centre height [m] (the hexapod stands ~72 mm)
     target_height = 0.072
@@ -206,11 +330,11 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     # COSTLY when commanded (slightly > forward_progress so being short is punished harder than
     # progress is paid), giving a wide walk-vs-stand margin that survives stability/smoothness shaping.
     stationary_penalty_reward_scale = -15.0
-    yaw_rate_reward_scale = 0.5
-    lateral_vel_reward_scale = -2.0
-    yaw_rate_l2_reward_scale = -1.5          # gentle: -3.0 (always-on) punished stand-phase exploration & slowed standing 2x. World-frame forward_progress is the real anti-circle fix.
-    lateral_pos_reward_scale = -2.0           # stay on the spawn x-axis (straight line)
-    heading_reward_scale = -4.0               # hold +x heading (stops the steady veer/circle that yaw-rate misses)
+    yaw_rate_reward_scale = 1.5              # was 0.5: reward tracking the COMMANDED yaw rate (turning). Bumped so turning is worth learning.
+    lateral_vel_reward_scale = -2.0          # gated OFF during turning episodes in the env (a curved path has body-y motion)
+    yaw_rate_l2_reward_scale = -1.5          # now penalizes (yaw_rate - cmd_yaw)^2 (command-relative), so it damps drift without fighting commanded turns
+    lateral_pos_reward_scale = -2.0           # stay on the spawn x-axis — STRAIGHT-line only; gated OFF during turning episodes in the env
+    heading_reward_scale = -4.0               # hold +x heading — STRAIGHT-line only; gated OFF during turning episodes (else it would block turns)
     z_vel_reward_scale = -1.0
     ang_vel_reward_scale = -0.10              # was -0.05: GENTLE 2x to damp fore-aft base rocking. NB this is an
                                               # ALWAYS-ON penalty that taxes moving (a stride inherently pitches a
@@ -247,13 +371,13 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     gait_symmetry_reward_scale = 1.5          # the planted/lifted feet form a left-right mirror
     foot_clearance_reward_scale = 4.0         # big deliberate swing lifts (anti-skitter)
     foot_clearance_target = 0.025             # swing-foot apex height rewarded up to [m] (0.04 too high -> unstable)
-    # --- phase-clock periodic gait (the time reference that kills jitter) ---
-    gait_frequency = 1.2                      # was 1.5: slower clock -> bigger, more deliberate wave (0.83 s cycle)
-    gait_swing_fraction = 0.30                # fraction of the cycle a leg is scheduled to swing
+    # --- phase-clock periodic gait (now driven by the CPG, not a separate clock) ---
+    # The CPG (cpg.py) OWNS the gait phase and frequency; this reward checks that the
+    # feet actually lift/plant when the CPG schedules them. A leg's CPG local phase
+    # p>=0.5 is its swing half (matches tripod_gait.gait_pose). Still 0 for a static
+    # stance (no scheduled-swing feet lifted, no stance violations).
     gait_phase_reward_scale = 3.0             # net term: +correctly LIFTING scheduled-swing feet, -lifting
-                                              # scheduled-stance feet (over-lifting). Was 3.5 and farmed to
-                                              # 1.73 as the top reward by air-stepping; the stance-violation
-                                              # penalty now makes over-lifting cost reward. Still 0 for a static stance.
+                                              # scheduled-stance feet (over-lifting).
     # foot plant angle: stance feet point steeply down so the claw digs in (anti-slip)
     foot_plant_reward_scale = 0.6             # reward steep stance feet
     foot_plant_target = 0.85                  # sin(angle below horizontal) target ~= 58-65 deg

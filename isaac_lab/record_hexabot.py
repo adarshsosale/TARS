@@ -39,19 +39,17 @@ from isaaclab.assets import Articulation
 from isaaclab.sensors import Camera, CameraCfg
 from isaaclab.sim import SimulationContext, SimulationCfg
 
-# reuse the exact robot articulation cfg used for training
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks", "hexabot"),
-)
+# reuse the exact robot articulation cfg + CPG used for training
+_HERE = os.path.dirname(os.path.abspath(__file__))            # isaac_lab/
+sys.path.insert(0, os.path.join(_HERE, "tasks", "hexabot"))
+sys.path.insert(0, os.path.dirname(_HERE))                    # repo root -> isaac_lab.interfaces
 from hexabot_env_cfg import HEXABOT_CFG, HexabotFlatEnvCfg  # noqa: E402
+from cpg import HexabotCPG  # noqa: E402  — the SAME CPG the policy was trained with
 
 CFG = HexabotFlatEnvCfg()
-ACTION_SCALE = CFG.action_scale          # 0.5
 TARGET_HEIGHT = CFG.target_height
 DECIM = CFG.decimation                   # 4 -> 50 Hz control
 N_ACTIONS = CFG.action_space             # 18
-GAIT_FREQ = CFG.gait_frequency           # gait clock advances at this rate (must match training)
 
 
 def main():
@@ -98,21 +96,23 @@ def main():
     command = torch.tensor([[args_cli.cmd_vx, 0.0, 0.0]], device=sim.device)
     last_action = torch.zeros(1, N_ACTIONS, device=sim.device)
 
-    def build_obs(gait_phase):
-        clock = torch.tensor(
-            [[np.sin(2.0 * np.pi * gait_phase), np.cos(2.0 * np.pi * gait_phase)]],
-            device=sim.device, dtype=torch.float32,
-        )
+    # the SAME tripod CPG used in training; advance it once per control step
+    cpg = HexabotCPG(robot.joint_names, num_envs=1, device=sim.device, cfg=CFG)
+    speed_scale = min(max(args_cli.cmd_vx / CFG.cpg_v_ref, 0.0), 1.2)
+    soft_lo = robot.data.soft_joint_pos_limits[..., 0]
+    soft_hi = robot.data.soft_joint_pos_limits[..., 1]
+
+    def build_obs():
+        # PROPRIOCEPTIVE-ONLY, matching hexabot_env._get_observations (no base lin vel).
         return torch.cat(
             [
-                robot.data.root_lin_vel_b,
-                robot.data.root_ang_vel_b,
                 robot.data.projected_gravity_b,
+                robot.data.root_ang_vel_b,
                 command,
                 robot.data.joint_pos - robot.data.default_joint_pos,
                 robot.data.joint_vel,
                 last_action,
-                clock,
+                cpg.phase_obs(),
             ],
             dim=-1,
         )
@@ -127,19 +127,21 @@ def main():
 
     n_control = int(args_cli.seconds * phys_hz / DECIM)   # 50 Hz control steps
     control_dt = DECIM / phys_hz                            # 0.02 s
-    gait_phase = 0.0
     frames = []
+    obs = build_obs()
     for c in range(n_control):
         with torch.inference_mode():
-            action = policy(build_obs(gait_phase))
-        last_action = action.clone()
-        gait_phase = (gait_phase + GAIT_FREQ * control_dt) % 1.0
-        target = ACTION_SCALE * action + default_q
+            action = policy(obs)
+        # advance the CPG then map action -> joint targets (mirrors _pre_physics_step)
+        cpg.step(action, control_dt)
+        target = torch.clamp(cpg.joint_targets(action, speed_scale), soft_lo, soft_hi)
         for _ in range(DECIM):
             robot.set_joint_position_target(target)
             robot.write_data_to_sim()
             sim.step(render=False)
             robot.update(dt)
+        last_action = action.clone()
+        obs = build_obs()
         # capture one frame per control step (-> 50 fps).  Low, wide hexapod ->
         # pull the camera back and down so the whole 0.59 m foot span stays framed.
         fx = robot.data.root_pos_w[0, 0].item()
