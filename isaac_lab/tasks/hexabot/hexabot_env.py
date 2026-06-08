@@ -89,6 +89,27 @@ class HexabotEnv(DirectRLEnv):
             [_name_to_local[_mirror(nm)] for nm in feet_names], device=self.device, dtype=torch.long
         )
 
+        # --- left-right (sagittal) joint symmetry, for PPO symmetry augmentation ---
+        # Built from the live DOF order so it stays correct regardless of how Isaac
+        # orders the joints. For each joint, _jt_mirror_idx points at its left<->right
+        # partner ('coxa_lf'->'coxa_rf', ...) and _jt_mirror_sign flips the coxa (yaw)
+        # joints (femur/tibia are pitch joints whose lift is handedness-free).
+        # See symmetry.py:compute_symmetric_states_lr.
+        joint_names = self._robot.data.joint_names
+
+        def _jmirror(nm: str) -> str:  # 'coxa_lf' -> 'coxa_rf'
+            prefix, leg = nm.rsplit("_", 1)
+            side = "r" if leg[0] == "l" else "l"
+            return f"{prefix}_{side}{leg[1:]}"
+
+        _jname_to_idx = {nm: i for i, nm in enumerate(joint_names)}
+        self._jt_mirror_idx = torch.tensor(
+            [_jname_to_idx[_jmirror(nm)] for nm in joint_names], device=self.device, dtype=torch.long
+        )
+        self._jt_mirror_sign = torch.tensor(
+            [-1.0 if nm.startswith("coxa_") else 1.0 for nm in joint_names], device=self.device
+        )
+
         # Per-leg gait phase offsets for a rear->mid->front symmetric wave: legs in a
         # mirror pair share an offset (move together -> symmetric), and the three pairs
         # are offset by 1/3 so exactly one pair swings at a time (>=4 feet always planted).

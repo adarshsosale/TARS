@@ -1,0 +1,159 @@
+# Isaac RL Lab — Agent Context
+
+This file is the authoritative context handoff for any agent (Claude Code or otherwise) working in this repo. It covers what has been tried, what broke, and how the system works.
+
+---
+
+## Environment
+
+- **Conda env:** `env_isaaclab` (Isaac Sim + Isaac Lab 2.3.2 / isaaclab 0.54.2, torch cu128)
+- **Isaac Lab clone:** `external/IsaacLab` — run Python via `./isaaclab.sh -p <script>` from inside that directory
+- **GPU:** RTX PRO 6000, 96 GB
+- **`external/`** is reserved for untouched cloned repos — never put project code there
+
+**Gotchas:**
+- Isaac processes **hang at `simulation_app.close()`** holding GPU memory — `pkill -9` them after every run
+- Python stdout to a redirected file is block-buffered — use `-u` flag
+- Use `sim.step(render=False)` for non-recording loops; `sim.step()` renders every frame and is slow headless
+- First run with `--enable_cameras` triggers slow RTX shader compile
+
+---
+
+## TARS / Growbot (bipedal)
+
+**Asset:** `isaac_lab/growbot.urdf` → `isaac_lab/growbot.usd`. 5 links: base_link, leg_left/right_link, foot_left/right_link. 4 revolute pitch joints: hip_left/right ±90°, ankle_left/right ±49°. No knee, no ankle-roll — sagittal-plane only. URDF has no foot friction material (PhysX default ~0.5 → feet slip); friction must be set explicitly. Grippy TPU material (static ~1.3) applied to feet + ground.
+
+**Task:** `isaac_lab/tasks/growbot/`, id `Isaac-Velocity-Flat-Growbot-Direct-v0` (direct workflow). Rewards: forward_progress + velocity tracking + upright + base-height + alive. Penalties: lateral-pos drift, yaw rate, foot_slip, action-rate/joint-vel.
+
+**Run:**
+```bash
+cd external/IsaacLab
+./isaaclab.sh -p ../../isaac_lab/train.py \
+  --task Isaac-Velocity-Flat-Growbot-Direct-v0 \
+  --num_envs 4096 --max_iterations 1500 --headless
+```
+Logs → `<project_root>/logs/rsl_rl/growbot_flat_direct/`. Export policy with rsl_rl `play.py`. Record: `./isaaclab.sh -p ../../isaac_lab/record_policy.py --policy <policy.pt>`.
+
+**Performance ceiling:** ~0.035 m/s with modest lateral drift. Faster/straighter is bounded by weak MG996R servos + no lateral DOF.
+
+---
+
+## Hexabot (18-DOF hexapod)
+
+**Spec:** 6 legs × coxa/femur/tibia = 18 DOF. 1.926 kg, stands ~72 mm. Single source of truth for the asset: `hexabot_model/generate_hexabot.py` (claw tip = tibia-local x = L_TIBIA = 0.135 m).
+
+**Task:** `isaac_lab/tasks/hexabot/`, id `Isaac-Velocity-Flat-Hexabot-Direct-v0` (direct workflow). Trains straight-line forward walking.
+
+**Run / export / record:**
+```bash
+cd external/IsaacLab
+
+# Train
+./isaaclab.sh -p ../../isaac_lab/train_hexabot.py \
+  --task Isaac-Velocity-Flat-Hexabot-Direct-v0 \
+  --num_envs 4096 --max_iterations 1000 --headless
+
+# Export BEST checkpoint (scored by mean forward body-velocity)
+./isaaclab.sh -p ../../isaac_lab/play_hexabot.py --select_best
+# Without --select_best → exports the LATEST checkpoint
+
+# Record video
+./isaaclab.sh -p ../../isaac_lab/record_hexabot.py --policy <exported/policy.pt>
+
+# Passive standing sanity test (no policy — confirm physics before blaming RL)
+./isaaclab.sh -p ../../isaac_lab/standing_test_hexabot.py
+```
+Logs → `logs/rsl_rl/hexabot_flat_direct/`.
+
+---
+
+## Hexabot: diagnosed failure modes and fixes
+
+### 1. Every episode died at ~step 5 (never learned)
+**Symptom:** mean ep length 5.00, 800+ deaths/iter.  
+**Cause:** PD spawn-settling transient dips base z to ~0.023 m (below `too_low < 0.035` death floor) in the first ~0.1 s regardless of spawn height.  
+**Fix:** `settle_steps=15` grace in `_get_dones` suppresses deaths for the first 15 control steps after reset. Also spawn at 0.072 m (not 0.085 m). Lowering spawn height alone does NOT remove the dip.
+
+### 2. Belly-crawl (lie flat, wiggle for a sliver of forward reward)
+**Fix:** stand-first curriculum (`curriculum_stand_steps=2000`, `curriculum_ramp_steps=4000` — command vx=0 then ramp), `belly_clearance` penalty (-50, one-sided when underbelly < 0.045 m), `foot_support` reward (+20, feet planted below belly via FK on tibia pose), alive 0.5→1.0, entropy 0.005→0.01, init_noise_std 1.0→0.8.
+
+### 3. Uncoordinated motion
+**Fix:** motion-gated (`cmd vx > 0.1`) `tetrapod_contact` (+1.5, bell at exactly 4 feet down) + `gait_symmetry` (+1.5, contact pattern matches left-right mirror; mirror map built from body names lf↔rf etc.) → symmetric tetrapod/wave gait.
+
+### 4. Small rapid jitter (first attempt)
+**Fix attempt:** `foot_clearance` reward (+4.0, swing feet rewarded for apex up to `foot_clearance_target=0.025` m) + bumped `feet_air_time` 1.0→2.5. These are motion-gated.
+
+### 5. Persistent small/rapid jitter (structural fix needed)
+Reward tuning (foot_clearance, air_time, action_rate, damping) could NOT fix it — `track_lin_vel_xy_exp` (exp map) **saturates**, giving no gradient for gait quality, and contact-count gait terms can be satisfied statically.
+
+**Fix = phase-clock periodic gait reward:**
+- Per-env gait clock `_gait_phase` advancing at `gait_frequency=1.5` Hz
+- Per-leg offsets: rear=0, mid=1/3, front=2/3 → rear→mid→front symmetric wave
+- `gait_swing_fraction=0.30`
+- `gait_phase` reward (+2.5) = fraction of feet matching their scheduled stance/swing
+- Clock added to obs as sin/cos → observation_space 66→68
+- **`record_hexabot.py` MUST build the same clocked obs** (it advances its own `gait_phase` at `GAIT_FREQ`)
+
+Jitter can't match a 0.67 s rhythm → dies out.
+
+### 6. Marching in place after adding gait reward
+**Symptom:** gait_phase 0.9 but forward_progress 0.04 — robot marched perfectly in place.  
+**Root cause:** `track_lin_vel_xy_exp` saturates → a frozen robot scores `exp(-0.15²/0.25)=0.91` of max at scale 2.0, paying ~1.8 for doing nothing.  
+**Fix:** `lin_vel_reward_scale` 2.0→0.5 so the standstill-zero linear `forward_progress` (12.0) dominates. Also dropped actuator `damping` 1.0→0.5 (1.0 over-resisted push-off).  
+**Result @250 iters:** forward_progress 0.04→1.0, gait_phase→1.5, tetrapod 0.82, symmetry 0.77, eplen 599, 0 deaths — coordinated forward wave gait.
+
+### 7. World-frame regression: froze + stood motionless (the "world-X" change)
+**Symptom after switching `forward_progress` to world-frame `root_lin_vel_w[:,0]` + adding `gait_phase`/`heading`/`foot_plant`:** policy collapsed to standing tall & motionless (dx≈0). Train-log: `track_lin_vel_xy_exp≈1.8` (biggest term), `forward_progress≈0.15`.
+
+**Root cause:** `track_lin_vel_xy_exp` was farmable by standing — at avg cmd ~0.15 m/s a frozen robot scores 0.91 of max, which at scale 2.0 drowned the linear `forward_progress`. Previously body-frame `forward_progress` rewarded the circling motion and masked this. Secondary: old `gait_phase = mean(feet_contact==sched_stance)` paid ~70% to a static all-planted stance.
+
+**Fix:** (a) `lin_vel_reward_scale` 2.0→0.5; (b) rewrote `gait_phase` to reward only correctly **lifting** scheduled-swing feet (`(~feet_contact & sched_swing).sum / n_sched_swing`) — static robot scores 0. World-frame `forward_progress` kept.
+
+**LESSON:** A saturating exp velocity-tracking term must NOT outweigh the linear forward driver, or standing becomes optimal. Audit `train.log Episode_Reward/*` breakdown — `forward_progress` should dominate when moving.
+
+---
+
+## Hexabot: RL-algorithm changes (not reward tuning)
+
+### Left-right symmetry data augmentation (RslRlSymmetryCfg) — ADOPTED
+The hexapod is exactly mirror-symmetric and straight-line walking is a symmetric task, so
+every transition's left-right mirror is valid on-policy data. `symmetry.py:compute_symmetric_states_lr`
+mirrors each PPO minibatch (swap l/r legs, sign-flip coxa-yaw joints, negate lat-vel/gravity/cmd,
+gait clock invariant); wired via `RslRlSymmetryCfg(use_data_augmentation=True, ...)` in the PPO cfg.
+The joint mirror permutation/sign are built from live `joint_names` in `HexabotEnv.__init__`
+(`_jt_mirror_idx`, `_jt_mirror_sign`). Coxa flips sign because its axis is world +Z (yaw → −yaw under
+reflection); femur/tibia are pitch joints (lift is handedness-free) so they swap WITHOUT a sign flip
+— same treatment as ANYmal HAA vs HFE/KFE. Verified the mirror is a correct involution before training.
+
+**Result vs the dx=4.774 baseline (`runs/2026-06-08_19-58-43`), full 1000-iter run:**
+- **dy 1.111 → 0.117 m** (~9× straighter — the headline win) and stands taller (final_h 0.053 → 0.069 m).
+- **Training far more robust:** smooth monotonic eplen climb, tail settles at **462–529** vs baseline's
+  noisy 240–355 that *declines to 167*. Best checkpoint fwd_vel ≈0.29 m/s, steady across iters 550–999.
+- **Cost: raw dx 4.774 → 1.6–1.9 m** AND the walking breakout is ~325 iters LATER (iter ~850 vs ~500).
+  Hard augmentation over-regularizes the exploration phase. But the baseline's "high dx" is really
+  uncommanded over-driving — it hit 0.477 m/s on a 0.2 m/s command while veering off; the symmetric
+  policy *tracks* the command and goes straight. Tradeoff accepted: straight+stable over fast+crooked.
+- To push speed back up later: try soft `use_mirror_loss` (won't block exploration → earlier breakout),
+  or raise the command range / `forward_progress` weight. Untried: obs-normalization + longer horizon.
+
+**LANDMINE (cost me 3 wasted runs):** the eplen≈16 plateau lasts to ~iter 300 and walking only breaks
+out ~iter 500 (later with symmetry). This is NORMAL for the current reward config, NOT a failure —
+short 150-400 iter validation runs are still in the plateau and look identically "broken." **Judge any
+Hexabot change only on a full run past the breakout (~iter 550+).**
+
+---
+
+## Hexabot: known landmines
+
+- **`joint_accel_reward_scale` -2.5e-7 is a hard limit.** Raising to -5e-7 broke the STAND phase (eplen stuck at 16 = settle_steps+1; robot stopped applying corrective accels). `dof_acc` penalty is always-on (not motion-gated) — any change affects standing. Keep at -2.5e-7.
+- **`foot_clearance_target=0.04` is too high** (~55% of 72 mm standing height) → destabilizing. 0.025 is stable.
+- **`action_rate = -0.04` over-suppresses motion** (robot nearly stops). -0.015 is fine.
+- **Validate any reward change with a ~250-iter run** (reaches full curriculum ramp): expect eplen→599, died→0, and verify `forward_progress` doesn't collapse.
+
+---
+
+## Checkpoint for other agents
+
+After all fixes, a 60-iter smoke run showed: ep length 5→112 and rising, deaths 820→3/iter. The hardware/stance/actuators are fine — the original collapse was spawn-death + last-checkpoint export, not the robot.
+
+Validated good run (2026-06-08): eplen 599, 0 deaths, forward_progress ~1.0, coordinated forward wave gait.
