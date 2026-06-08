@@ -1,0 +1,4 @@
+external/
+logs/
+*.pyc
+outputs/

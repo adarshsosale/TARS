@@ -1,0 +1,58 @@
+[3gH    H    H    H    H    H    H    H    H    H    H    H    H    H    H    H    H    H    H    H   [INFO] Using python from: /home/adarshsosale/miniconda3/envs/env_isaaclab/bin/python
+[INFO][AppLauncher]: Using device: cuda:0
+[INFO][AppLauncher]: Loading experience file: /home/adarshsosale/Workspace/Isaac RL Lab/external/IsaacLab/apps/isaaclab.python.headless.rendering.kit
+Loading user config located at: '/home/adarshsosale/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/isaacsim/kit/data/Kit/Isaac-Sim/5.1/user.config.json'
+[Info] [carb] Logging to file: /home/adarshsosale/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/isaacsim/kit/logs/Kit/Isaac-Sim/5.1/kit_20260608_024505.log
+2026-06-07T21:15:05Z [128ms] [Warning] [carb.windowing-glfw.gamepad] Joystick with unknown remapping detected (will be ignored):  qk.co QK80 MK2 2.4G System Control [03000000485400004542000010010000]
+
+|---------------------------------------------------------------------------------------------|
+| Driver Version: 580.65.06     | Graphics API: Vulkan
+|=============================================================================================|
+| GPU | Name                             | Active | LDA | GPU Memory | Vendor-ID | LUID       |
+|     |                                  |        |     |            | Device-ID | UUID       |
+|     |                                  |        |     |            | Bus-ID    |            |
+|---------------------------------------------------------------------------------------------|
+| 0   | NVIDIA RTX PRO 6000 Blackwell .. | Yes: 0 |     | 98133   MB | 10de      | 0          |
+|     |                                  |        |     |            | 2bb4      | 543dba01.. |
+|     |                                  |        |     |            | a         |            |
+|=============================================================================================|
+| OS: 8 elementary, Version: 8.00.0, Kernel: 6.14.0-33-generic
+| XServer Vendor: The X.Org Foundation, XServer Version: 12101011 (1.21.1.11)
+| Processor: AMD Ryzen 7 5800X 8-Core Processor
+| Cores: 8 | Logical Cores: 16
+|---------------------------------------------------------------------------------------------|
+| Total Memory (MB): 96464 | Free Memory: 83051
+| Total Page/Swap (MB): 3907 | Free Page/Swap: 3907
+|---------------------------------------------------------------------------------------------|
+2026-06-07T21:15:05Z [695ms] [Warning] [gpu.foundation.plugin] IOMMU is enabled.
+2026-06-07T21:15:06Z [1,675ms] [Warning] [omni.log] Source: omni.hydra was already registered.
+2026-06-07T21:15:07Z [1,921ms] [Warning] [carb] Acquiring non optional plugin interface which is not listed as dependency: [omni::physx::IPhysxBenchmarks v1.0] (plugin: <default plugin>), by client: omni.physics.physx.plugin. Add it to CARB_PLUGIN_IMPL_DEPS() macro of a client.
+2026-06-07T21:15:07Z [1,929ms] [Warning] [omni.isaac.dynamic_control] omni.isaac.dynamic_control is deprecated as of Isaac Sim 4.5. No action is needed from end-users.
+2026-06-07T21:15:09Z [4,221ms] [Warning] [pxr.Semantics] pxr.Semantics is deprecated - please use Semantics instead
+2026-06-07T21:15:09Z [4,308ms] [Warning] [omni.graph.core.plugin] Found duplicate of category 'Replicator' - was 'Annotators', adding 'Fabric Reader'
+2026-06-07T21:15:09Z [4,309ms] [Warning] [omni.graph.core.plugin] Category 'Replicator' not accepted on node type 'omni.replicator.core.FabricReader' in extension 'omni.replicator.core'
+2026-06-07T21:15:09Z [4,309ms] [Warning] [omni.replicator.core.scripts.extension] No material configuration file, adding configuration to material settings directly.
+2026-06-07T21:15:12Z [7,631ms] [Warning] [omni.fabric.plugin] Warning: attribute viewportHandle not found for bucket id 7
+
+Traceback (most recent call last):
+  File "/home/adarshsosale/Workspace/Isaac RL Lab/isaac_lab/record_policy.py", line 47, in <module>
+    from growbot_env_cfg import GROWBOT_CFG, GrowbotFlatEnvCfg  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'growbot_env_cfg'
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Annotators' for removal
+2026-06-07T21:15:13Z [8,083ms] [Warning] [omni.graph.core.plugin] Could not find category 'Replicator:Core' for removal
+2026-06-07T21:15:13Z [8,086ms] [Warning] [omni.physx.plugin] USD stage detach not called, holding a loose ptr to a stage!
+2026-06-07T21:15:13Z [8,092ms] [Warning] [omni.fabric.plugin] gFabricState->gUsdStageToSimStageWithHistoryMap had 1 outstanding SimStageWithHistory(s) at shutdown
+2026-06-07T21:15:13Z [8,159ms] [Warning] [carb] Recursive unloadAllPlugins() detected!
