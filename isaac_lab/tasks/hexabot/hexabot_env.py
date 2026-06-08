@@ -200,8 +200,11 @@ class HexabotEnv(DirectRLEnv):
             eff_dt = self.step_dt
         self._cpg.step(self._actions, eff_dt)
 
-        # nominal stride amplitude tracks the commanded speed (0 at vx=0 -> stand)
-        self._speed_scale = (self._commands[:, 0] / self.cfg.cpg_v_ref).clamp(0.0, 1.2)
+        # nominal stride amplitude tracks the command magnitude (0 -> stand). Yaw
+        # activates the gait too, so the robot can turn even at zero forward speed.
+        vx_act = self._commands[:, 0].abs() / self.cfg.cpg_v_ref
+        yaw_act = self._commands[:, 2].abs() / self.cfg.cpg_yaw_ref
+        self._speed_scale = torch.maximum(vx_act, yaw_act).clamp(0.0, 1.2)
         raw = self._cpg.joint_targets(self._actions, self._speed_scale)
         # clamp to soft joint limits (CPG output is absolute joint targets)
         lo = self._robot.data.soft_joint_pos_limits[..., 0]
@@ -253,15 +256,18 @@ class HexabotEnv(DirectRLEnv):
             torch.square(self._commands[:, :2] - self._robot.data.root_lin_vel_b[:, :2]), dim=1
         )
         lin_vel_error_mapped = torch.exp(-lin_vel_error / 0.25)
-        # linear forward-progress reward (WORLD-frame +x, 0 at standstill, capped at command)
+        # linear forward-progress reward (BODY-frame +x so "forward" follows the
+        # robot's heading — required for turning; on straight episodes the heading
+        # term below keeps body +x aligned to world +x). 0 at standstill, capped at cmd.
         forward_progress = torch.clamp(
-            torch.minimum(self._robot.data.root_lin_vel_w[:, 0], self._commands[:, 0]), min=0.0
+            torch.minimum(self._robot.data.root_lin_vel_b[:, 0], self._commands[:, 0]), min=0.0
         )
         # yaw-rate tracking (command 0 -> go straight)
         yaw_rate_error = torch.square(self._commands[:, 2] - self._robot.data.root_ang_vel_b[:, 2])
         yaw_rate_error_mapped = torch.exp(-yaw_rate_error / 0.25)
         lateral_vel = torch.square(self._robot.data.root_lin_vel_b[:, 1])
-        yaw_rate_l2 = torch.square(self._robot.data.root_ang_vel_b[:, 2])
+        # command-relative yaw-rate penalty: damps drift without fighting a commanded turn
+        yaw_rate_l2 = torch.square(self._commands[:, 2] - self._robot.data.root_ang_vel_b[:, 2])
         # heading hold: body +x axis should keep pointing along world +x
         fwd_axis_w = quat_apply(self._robot.data.root_quat_w, self._world_x.expand(self.num_envs, 3))
         heading_err = torch.square(fwd_axis_w[:, 1])
@@ -303,9 +309,13 @@ class HexabotEnv(DirectRLEnv):
         )
         foot_slip = torch.sum(feet_planar_speed * feet_contact, dim=1)
         # --- coordinated symmetric tetrapod gait (only while commanded to move) ---
-        moving = (torch.norm(self._commands[:, :2], dim=1) > 0.1).float()
+        # "moving" now includes a yaw command, so turn-in-place episodes still get the
+        # gait-shaping rewards. straight_mask flags pure-straight (no-yaw) episodes,
+        # where the go-straight terms (heading / lateral) apply.
+        moving = ((torch.norm(self._commands[:, :2], dim=1) > 0.1) | (self._commands[:, 2].abs() > 0.05)).float()
+        straight_mask = (self._commands[:, 2].abs() < 1e-3).float()
         vel_shortfall = torch.clamp(
-            self._commands[:, 0] - self._robot.data.root_lin_vel_w[:, 0], min=0.0
+            self._commands[:, 0] - self._robot.data.root_lin_vel_b[:, 0], min=0.0
         ) * moving
         n_contact = feet_contact.float().sum(dim=1)
         tetrapod_contact = torch.exp(-torch.square(n_contact - 4.0)) * moving
@@ -350,10 +360,10 @@ class HexabotEnv(DirectRLEnv):
             "forward_progress": forward_progress * self.cfg.forward_progress_reward_scale * self.step_dt,
             "stationary_penalty": vel_shortfall * self.cfg.stationary_penalty_reward_scale * self.step_dt,
             "track_ang_vel_z_exp": yaw_rate_error_mapped * self.cfg.yaw_rate_reward_scale * self.step_dt,
-            "lateral_vel_l2": lateral_vel * self.cfg.lateral_vel_reward_scale * self.step_dt,
+            "lateral_vel_l2": lateral_vel * straight_mask * self.cfg.lateral_vel_reward_scale * self.step_dt,
             "yaw_rate_l2": yaw_rate_l2 * self.cfg.yaw_rate_l2_reward_scale * self.step_dt,
-            "heading": heading_err * moving * self.cfg.heading_reward_scale * self.step_dt,
-            "lateral_pos_l2": lateral_pos * self.cfg.lateral_pos_reward_scale * self.step_dt,
+            "heading": heading_err * moving * straight_mask * self.cfg.heading_reward_scale * self.step_dt,
+            "lateral_pos_l2": lateral_pos * straight_mask * self.cfg.lateral_pos_reward_scale * self.step_dt,
             "lin_vel_z_l2": z_vel_error * self.cfg.z_vel_reward_scale * self.step_dt,
             "ang_vel_xy_l2": ang_vel_error * self.cfg.ang_vel_reward_scale * self.step_dt,
             "flat_orientation_l2": flat_orientation * self.cfg.flat_orientation_reward_scale * self.step_dt,
@@ -429,6 +439,15 @@ class HexabotEnv(DirectRLEnv):
             vx_max = frac * self.cfg.cmd_vx_range[1]
         if vx_max > 0.0:
             self._commands[env_ids, 0] = torch.empty(n, device=self.device).uniform_(0.0, vx_max)
+        # turning curriculum: after the forward gait is solid, a fraction of episodes
+        # get a random yaw command (magnitude ramps in); the rest stay straight so
+        # straight-line quality is preserved.
+        if self._step_count >= self.cfg.yaw_curriculum_start_steps:
+            yfrac = min(1.0, (self._step_count - self.cfg.yaw_curriculum_start_steps) / self.cfg.yaw_curriculum_ramp_steps)
+            yaw_max = yfrac * self.cfg.cmd_yaw_range[1]
+            turn = torch.rand(n, device=self.device) < self.cfg.yaw_command_prob
+            yaw_cmd = torch.empty(n, device=self.device).uniform_(-yaw_max, yaw_max)
+            self._commands[env_ids, 2] = torch.where(turn, yaw_cmd, torch.zeros_like(yaw_cmd))
 
         # reset robot state with small joint noise for exploration
         joint_pos = self._robot.data.default_joint_pos[env_ids].clone()

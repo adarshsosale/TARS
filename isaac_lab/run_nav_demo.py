@@ -20,8 +20,11 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--policy", type=str, required=True, help="path to exported locomotion policy.pt")
-parser.add_argument("--goal_x", type=float, default=2.5, help="goal world x [m] (forward)")
-parser.add_argument("--goal_y", type=float, default=0.0, help="goal world y [m] (left). Stage-0 straight-line: keep ~0")
+parser.add_argument("--goal_x", type=float, default=2.5, help="single-goal world x [m] (forward)")
+parser.add_argument("--goal_y", type=float, default=0.0, help="single-goal world y [m] (left)")
+parser.add_argument("--waypoints", type=str, default=None,
+                    help="multi-turn path as 'x1,y1;x2,y2;...' in world coords (overrides --goal_*). "
+                         "e.g. '2,0;2,1.5' = go straight 2 m, then turn left and go 1.5 m")
 parser.add_argument("--seconds", type=float, default=20.0)
 parser.add_argument("--out", type=str, default="/home/adarshsosale/Workspace/Isaac RL Lab/hexabot_model/hexabot_nav.mp4")
 parser.add_argument("--settle", type=float, default=0.5)
@@ -98,7 +101,14 @@ def main():
     soft_hi = robot.data.soft_joint_pos_limits[..., 1]
     default_q = robot.data.default_joint_pos.clone()
 
-    goal = torch.tensor([args_cli.goal_x, args_cli.goal_y], device=sim.device)
+    if args_cli.waypoints:
+        wps = [[float(v) for v in p.split(",")] for p in args_cli.waypoints.split(";")]
+    else:
+        wps = [[args_cli.goal_x, args_cli.goal_y]]
+    waypoints = torch.tensor(wps, device=sim.device)    # (M, 2) world
+    wp_idx = 0
+    WP_ADVANCE = 0.30                                    # advance to next waypoint within this distance [m]
+    print(f"[NAV] following {len(wps)} waypoint(s): {wps}", flush=True)
     command = torch.zeros(1, 3, device=sim.device)      # the frozen interface, refreshed by the nav layer
     last_action = torch.zeros(1, N_ACTIONS, device=sim.device)
 
@@ -106,9 +116,9 @@ def main():
         fwd = quat_apply(robot.data.root_quat_w, torch.tensor([1.0, 0.0, 0.0], device=sim.device).expand(1, 3))
         return torch.atan2(fwd[:, 1], fwd[:, 0])[0]
 
-    def goal_rel_robot():
+    def goal_rel_robot(target):
         pos = robot.data.root_pos_w[0, :2]
-        d = goal - pos
+        d = target - pos
         yaw = robot_yaw()
         c, s = torch.cos(yaw), torch.sin(yaw)
         dx_b = (c * d[0] + s * d[1]).item()
@@ -144,10 +154,16 @@ def main():
     for c in range(n_control):
         # --- Navigation tick: refresh the velocity command every nav_decimation steps ---
         if c % NAV.nav_decimation == 0:
-            dxb, dyb = goal_rel_robot()
+            dxb, dyb = goal_rel_robot(waypoints[wp_idx])
+            d = (dxb ** 2 + dyb ** 2) ** 0.5
+            # advance to the next waypoint once close enough (turning toward it as needed)
+            if d < WP_ADVANCE and wp_idx < len(waypoints) - 1:
+                wp_idx += 1
+                dxb, dyb = goal_rel_robot(waypoints[wp_idx])
+                d = (dxb ** 2 + dyb ** 2) ** 0.5
             cmd = go_to_goal((dxb, dyb), lidar=None, reach_tol=NAV.reach_tol)  # dormant lidar slot
             command = cmd.to_tensor(device=sim.device, batch=1)
-            if (dxb ** 2 + dyb ** 2) ** 0.5 < NAV.reach_tol and reached_at is None:
+            if wp_idx == len(waypoints) - 1 and d < NAV.reach_tol and reached_at is None:
                 reached_at = c * control_dt
 
         # --- Locomotion: track the command through the CPG ---
@@ -175,9 +191,11 @@ def main():
         frames.append(camera.data.output["rgb"][0, ..., :3].clone().cpu().numpy().astype(np.uint8))
 
     px, py = robot.data.root_pos_w[0, 0].item(), robot.data.root_pos_w[0, 1].item()
-    final_d = ((goal[0].item() - px) ** 2 + (goal[1].item() - py) ** 2) ** 0.5
-    print(f"[NAV] goal=({args_cli.goal_x:.2f},{args_cli.goal_y:.2f})  final=({px:.2f},{py:.2f})  "
-          f"dist_to_goal={final_d:.3f} m  reached={'yes @%.1fs' % reached_at if reached_at else 'no'}", flush=True)
+    fg = waypoints[-1]
+    final_d = ((fg[0].item() - px) ** 2 + (fg[1].item() - py) ** 2) ** 0.5
+    print(f"[NAV] final waypoint=({fg[0].item():.2f},{fg[1].item():.2f})  robot=({px:.2f},{py:.2f})  "
+          f"reached_waypoints={wp_idx + 1}/{len(waypoints)}  dist_to_final={final_d:.3f} m  "
+          f"reached={'yes @%.1fs' % reached_at if reached_at else 'no'}", flush=True)
 
     os.makedirs(os.path.dirname(args_cli.out), exist_ok=True)
     imageio.mimsave(args_cli.out, frames, fps=phys_hz / DECIM, quality=8, macro_block_size=8)

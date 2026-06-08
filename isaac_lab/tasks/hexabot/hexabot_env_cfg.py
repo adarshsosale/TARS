@@ -330,11 +330,11 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     # COSTLY when commanded (slightly > forward_progress so being short is punished harder than
     # progress is paid), giving a wide walk-vs-stand margin that survives stability/smoothness shaping.
     stationary_penalty_reward_scale = -15.0
-    yaw_rate_reward_scale = 0.5
-    lateral_vel_reward_scale = -2.0
-    yaw_rate_l2_reward_scale = -1.5          # gentle: -3.0 (always-on) punished stand-phase exploration & slowed standing 2x. World-frame forward_progress is the real anti-circle fix.
-    lateral_pos_reward_scale = -2.0           # stay on the spawn x-axis (straight line)
-    heading_reward_scale = -4.0               # hold +x heading (stops the steady veer/circle that yaw-rate misses)
+    yaw_rate_reward_scale = 1.5              # was 0.5: reward tracking the COMMANDED yaw rate (turning). Bumped so turning is worth learning.
+    lateral_vel_reward_scale = -2.0          # gated OFF during turning episodes in the env (a curved path has body-y motion)
+    yaw_rate_l2_reward_scale = -1.5          # now penalizes (yaw_rate - cmd_yaw)^2 (command-relative), so it damps drift without fighting commanded turns
+    lateral_pos_reward_scale = -2.0           # stay on the spawn x-axis — STRAIGHT-line only; gated OFF during turning episodes in the env
+    heading_reward_scale = -4.0               # hold +x heading — STRAIGHT-line only; gated OFF during turning episodes (else it would block turns)
     z_vel_reward_scale = -1.0
     ang_vel_reward_scale = -0.10              # was -0.05: GENTLE 2x to damp fore-aft base rocking. NB this is an
                                               # ALWAYS-ON penalty that taxes moving (a stride inherently pitches a
