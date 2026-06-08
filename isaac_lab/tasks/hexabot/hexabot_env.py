@@ -59,12 +59,27 @@ class HexabotEnv(DirectRLEnv):
                 "feet_air_time",
                 "foot_slip",
                 "undesired_contacts",
+                "tetrapod_contact",
+                "gait_symmetry",
+                "foot_clearance",
             ]
         }
 
         # contact-sensor body indices
         self._base_id, _ = self._contact_sensor.find_bodies("base_link")
-        self._feet_ids, _ = self._contact_sensor.find_bodies("tibia_.*")          # the 6 claw feet
+        self._feet_ids, feet_names = self._contact_sensor.find_bodies("tibia_.*")  # the 6 claw feet
+
+        # left<->right mirror permutation over the 6 feet (in self._feet_ids order),
+        # for the symmetric-gait reward. names look like 'tibia_lf' -> mirror 'tibia_rf'.
+        def _mirror(nm: str) -> str:
+            prefix, sp = nm.rsplit("_", 1)              # 'tibia', 'lf'
+            side = "r" if sp[0] == "l" else "l"
+            return f"{prefix}_{side}{sp[1:]}"
+
+        _name_to_local = {nm: i for i, nm in enumerate(feet_names)}
+        self._feet_mirror_idx = torch.tensor(
+            [_name_to_local[_mirror(nm)] for nm in feet_names], device=self.device, dtype=torch.long
+        )
         self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(["base_link", "coxa_.*", "femur_.*"])
         # robot-frame body indices for the feet (for foot-velocity / slip)
         self._feet_body_ids, _ = self._robot.find_bodies("tibia_.*")
@@ -175,6 +190,21 @@ class HexabotEnv(DirectRLEnv):
             torch.square(self._robot.data.body_lin_vel_w[:, self._feet_body_ids, :2]), dim=-1
         )
         foot_slip = torch.sum(feet_planar_speed * feet_contact, dim=1)
+        # --- coordinated symmetric tetrapod gait (only while commanded to move) ---
+        moving = (torch.norm(self._commands[:, :2], dim=1) > 0.1).float()
+        n_contact = feet_contact.float().sum(dim=1)
+        # bell peaking at exactly 4 feet planted (0.37 at 3 or 5 -> tolerant of swing transitions)
+        tetrapod_contact = torch.exp(-torch.square(n_contact - 4.0)) * moving
+        # left-right symmetric contact pattern: fraction of feet matching their mirror.
+        # require >=1 foot lifted so a frozen all-6-down stance can't farm symmetry.
+        sym_match = (feet_contact == feet_contact[:, self._feet_mirror_idx]).float().mean(dim=1)
+        gait_symmetry = sym_match * (n_contact < 6).float() * moving
+        # swing-foot clearance: reward lifted feet reaching a target apex height so the
+        # legs take big, deliberate strides instead of skittering just off the ground.
+        swing = (~feet_contact).float()
+        foot_clearance = torch.sum(
+            torch.clamp(foot_z, min=0.0, max=self.cfg.foot_clearance_target) * swing, dim=1
+        ) * moving
         # undesired contacts (body / coxa / femur hitting the ground)
         is_contact = (
             torch.max(torch.norm(net_contact_forces[:, :, self._undesired_contact_body_ids], dim=-1), dim=1)[0] > 1.0
@@ -202,6 +232,9 @@ class HexabotEnv(DirectRLEnv):
             "feet_air_time": air_time * self.cfg.feet_air_time_reward_scale * self.step_dt,
             "foot_slip": foot_slip * self.cfg.foot_slip_reward_scale * self.step_dt,
             "undesired_contacts": contacts * self.cfg.undesired_contact_reward_scale * self.step_dt,
+            "tetrapod_contact": tetrapod_contact * self.cfg.tetrapod_contact_reward_scale * self.step_dt,
+            "gait_symmetry": gait_symmetry * self.cfg.gait_symmetry_reward_scale * self.step_dt,
+            "foot_clearance": foot_clearance * self.cfg.foot_clearance_reward_scale * self.step_dt,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         for key, value in rewards.items():

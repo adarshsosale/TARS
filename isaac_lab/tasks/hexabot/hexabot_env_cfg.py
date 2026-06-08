@@ -205,11 +205,16 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     foot_support_reward_scale = 20.0          # reward feet planted well below the belly
     # --- effort / smoothness ---
     joint_torque_reward_scale = -2.0e-5
-    joint_accel_reward_scale = -2.5e-7
+    joint_accel_reward_scale = -5.0e-7        # was -2.5e-7: ~A^2 f^4, kills high-freq jitter, spares slow waves
     action_rate_reward_scale = -0.01
     joint_limit_reward_scale = -1.0           # discourage slamming joint limits
     # --- stepping behaviour ---
-    feet_air_time_reward_scale = 1.0          # reward real, lifted swing steps
+    feet_air_time_reward_scale = 2.5          # was 1.0: longer swings -> slower cadence, bigger strides
     feet_air_time_threshold = 0.2             # min step duration to count [s]
     foot_slip_reward_scale = -0.1             # kill planted-foot scuffing
     undesired_contact_reward_scale = -1.0     # body/coxa/femur must not touch ground
+    # --- coordinated symmetric tetrapod gait (motion-gated) ---
+    tetrapod_contact_reward_scale = 1.5       # keep exactly 4 of 6 feet planted while walking
+    gait_symmetry_reward_scale = 1.5          # the planted/lifted feet form a left-right mirror
+    foot_clearance_reward_scale = 4.0         # big deliberate swing lifts (anti-skitter)
+    foot_clearance_target = 0.04              # swing-foot apex height rewarded up to [m]
