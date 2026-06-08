@@ -199,23 +199,40 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     # translation driver.
     lin_vel_reward_scale = 0.5
     forward_progress_reward_scale = 12.0      # linear, un-saturated, 0 at standstill -> the real translation driver
+    # standstill-when-commanded penalty (the structural anti-static-stance fix). forward_progress
+    # is a reward that's merely 0 at standstill, so a frozen tall stance still nets the large
+    # command-independent comfort baseline (alive + foot_support + saturating trackers ~= +2.6) and
+    # any always-on moving-tax flips the policy back to standing. This makes standstill ACTIVELY
+    # COSTLY when commanded (slightly > forward_progress so being short is punished harder than
+    # progress is paid), giving a wide walk-vs-stand margin that survives stability/smoothness shaping.
+    stationary_penalty_reward_scale = -15.0
     yaw_rate_reward_scale = 0.5
     lateral_vel_reward_scale = -2.0
     yaw_rate_l2_reward_scale = -1.5          # gentle: -3.0 (always-on) punished stand-phase exploration & slowed standing 2x. World-frame forward_progress is the real anti-circle fix.
     lateral_pos_reward_scale = -2.0           # stay on the spawn x-axis (straight line)
     heading_reward_scale = -4.0               # hold +x heading (stops the steady veer/circle that yaw-rate misses)
     z_vel_reward_scale = -1.0
-    ang_vel_reward_scale = -0.05
-    flat_orientation_reward_scale = -2.5
+    ang_vel_reward_scale = -0.10              # was -0.05: GENTLE 2x to damp fore-aft base rocking. NB this is an
+                                              # ALWAYS-ON penalty that taxes moving (a stride inherently pitches a
+                                              # little) while a static stance pays 0 -> jumping straight to -0.25
+                                              # plus other penalties re-created the static-stance optimum
+                                              # (dx 3.8m -> 0.03m). Ramp this up only after confirming the walk holds.
+    flat_orientation_reward_scale = -2.5      # keep at the tuned value (the -3.5 bump helped tip it back to standing)
     base_height_reward_scale = -8.0
     alive_reward_scale = 1.0                   # survival must clearly pay (was 0.5)
     # --- stand tall, don't belly-crawl ---
     belly_clearance_reward_scale = -50.0      # strong one-sided penalty: belly near ground
-    foot_support_reward_scale = 20.0          # reward feet planted well below the belly
+    foot_support_reward_scale = 10.0          # was 20.0: trim the standing scaffolding. This is a
+                                              # command-independent reward a tall static tuck maxes out
+                                              # (~+0.9), propping the static-stance optimum; belly_clearance
+                                              # (-50, one-sided) already does the real anti-belly-crawl job.
     # --- effort / smoothness ---
     joint_torque_reward_scale = -2.0e-5
     joint_accel_reward_scale = -2.5e-7        # NB: doubling this to -5e-7 broke the stand phase (robot stopped correcting)
-    action_rate_reward_scale = -0.015        # -0.04 over-suppressed motion (robot nearly stopped); modest value
+    action_rate_reward_scale = -0.017        # was -0.015: tiny nudge for smoother leg motion (penalize step-to-step
+                                              # action jumps). Kept barely above the known-good value because this is
+                                              # also an always-on moving-tax; -0.02 alongside the stability bumps
+                                              # helped flip it back to standing. Held far below the -0.04 ceiling.
     joint_limit_reward_scale = -1.0           # discourage slamming joint limits
     # --- stepping behaviour ---
     feet_air_time_reward_scale = 2.5          # was 1.0: longer swings -> slower cadence, bigger strides

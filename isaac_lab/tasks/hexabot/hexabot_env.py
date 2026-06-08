@@ -45,6 +45,7 @@ class HexabotEnv(DirectRLEnv):
             for key in [
                 "track_lin_vel_xy_exp",
                 "forward_progress",
+                "stationary_penalty",
                 "track_ang_vel_z_exp",
                 "lateral_vel_l2",
                 "yaw_rate_l2",
@@ -222,6 +223,18 @@ class HexabotEnv(DirectRLEnv):
         foot_slip = torch.sum(feet_planar_speed * feet_contact, dim=1)
         # --- coordinated symmetric tetrapod gait (only while commanded to move) ---
         moving = (torch.norm(self._commands[:, :2], dim=1) > 0.1).float()
+        # stationary-when-commanded penalty: punish the forward-speed SHORTFALL vs the command
+        # whenever asked to move. forward_progress is a *reward* (0 at standstill), so it only
+        # makes moving UNREWARDED relative to standing -- it never makes standing COSTLY. The
+        # model accumulated a large command-independent standing baseline (alive + foot_support +
+        # the saturating exp velocity trackers ~= +2.6) to fight belly-crawl / spawn-death, which
+        # made a frozen tall stance near-optimal; any small always-on moving-tax (even -0.10
+        # pitch-rate) then tipped it back to standing. This term makes standstill ACTIVELY negative
+        # when commanded -> widens the walk-vs-stand margin so stability/smoothness shaping no
+        # longer flips the policy. Gated by `moving`, so the vx=0 stand-first curriculum is untouched.
+        vel_shortfall = torch.clamp(
+            self._commands[:, 0] - self._robot.data.root_lin_vel_w[:, 0], min=0.0
+        ) * moving
         n_contact = feet_contact.float().sum(dim=1)
         # bell peaking at exactly 4 feet planted (0.37 at 3 or 5 -> tolerant of swing transitions)
         tetrapod_contact = torch.exp(-torch.square(n_contact - 4.0)) * moving
@@ -272,6 +285,7 @@ class HexabotEnv(DirectRLEnv):
         rewards = {
             "track_lin_vel_xy_exp": lin_vel_error_mapped * self.cfg.lin_vel_reward_scale * self.step_dt,
             "forward_progress": forward_progress * self.cfg.forward_progress_reward_scale * self.step_dt,
+            "stationary_penalty": vel_shortfall * self.cfg.stationary_penalty_reward_scale * self.step_dt,
             "track_ang_vel_z_exp": yaw_rate_error_mapped * self.cfg.yaw_rate_reward_scale * self.step_dt,
             "lateral_vel_l2": lateral_vel * self.cfg.lateral_vel_reward_scale * self.step_dt,
             "yaw_rate_l2": yaw_rate_l2 * self.cfg.yaw_rate_l2_reward_scale * self.step_dt,
