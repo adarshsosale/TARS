@@ -1,0 +1,13 @@
+# hexabot materials
+newmtl mat_body
+Kd 0.13 0.13 0.15
+newmtl mat_link
+Kd 0.10 0.10 0.11
+newmtl mat_servo
+Kd 0.05 0.05 0.05
+newmtl mat_battery
+Kd 0.20 0.10 0.10
+newmtl mat_pcb
+Kd 0.10 0.30 0.18
+newmtl mat_toe
+Kd 0.02 0.02 0.02
