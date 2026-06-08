@@ -78,7 +78,7 @@ ABS_DENSITY   = 1040.0  # kg/m^3  (ABS 1.04 g/cm^3) for printed leg plastic
 PRINT_FILL    = 0.45    # effective density factor for printed parts (walls + ~25% infill)
 
 # --- joint limits (rad) — respect the MG996R's ~±90° travel ---
-LIM = {"coxa": (-0.60, 0.60), "femur": (-1.05, 1.05), "tibia": (-1.55, 0.45)}
+LIM = {"coxa": (-0.60, 0.60), "femur": (-1.05, 1.05), "tibia": (-1.55, 1.40)}  # tibia upper widened to clear the +64° (1.117 rad) standing stance + push-off headroom
 EFFORT, VEL, DAMPING = 1.08, 6.16, 0.05   # N·m, rad/s (MG996R @6V), joint damping
 
 # ----------------------------------------------------------------------- outputs

@@ -338,7 +338,7 @@
     <child link="tibia_lf"/>
     <origin xyz="0.080000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-1.5500" upper="0.4500" effort="1.08" velocity="6.16"/>
+    <limit lower="-1.5500" upper="1.4000" effort="1.08" velocity="6.16"/>
     <dynamics damping="0.05" friction="0.0"/>
   </joint>
 
@@ -363,7 +363,7 @@
     <child link="tibia_lm"/>
     <origin xyz="0.080000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-1.5500" upper="0.4500" effort="1.08" velocity="6.16"/>
+    <limit lower="-1.5500" upper="1.4000" effort="1.08" velocity="6.16"/>
     <dynamics damping="0.05" friction="0.0"/>
   </joint>
 
@@ -388,7 +388,7 @@
     <child link="tibia_lr"/>
     <origin xyz="0.080000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-1.5500" upper="0.4500" effort="1.08" velocity="6.16"/>
+    <limit lower="-1.5500" upper="1.4000" effort="1.08" velocity="6.16"/>
     <dynamics damping="0.05" friction="0.0"/>
   </joint>
 
@@ -413,7 +413,7 @@
     <child link="tibia_rf"/>
     <origin xyz="0.080000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-1.5500" upper="0.4500" effort="1.08" velocity="6.16"/>
+    <limit lower="-1.5500" upper="1.4000" effort="1.08" velocity="6.16"/>
     <dynamics damping="0.05" friction="0.0"/>
   </joint>
 
@@ -438,7 +438,7 @@
     <child link="tibia_rm"/>
     <origin xyz="0.080000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-1.5500" upper="0.4500" effort="1.08" velocity="6.16"/>
+    <limit lower="-1.5500" upper="1.4000" effort="1.08" velocity="6.16"/>
     <dynamics damping="0.05" friction="0.0"/>
   </joint>
 
@@ -463,7 +463,7 @@
     <child link="tibia_rr"/>
     <origin xyz="0.080000 0.000000 0.000000" rpy="0.000000 0.000000 0.000000"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-1.5500" upper="0.4500" effort="1.08" velocity="6.16"/>
+    <limit lower="-1.5500" upper="1.4000" effort="1.08" velocity="6.16"/>
     <dynamics damping="0.05" friction="0.0"/>
   </joint>
 
