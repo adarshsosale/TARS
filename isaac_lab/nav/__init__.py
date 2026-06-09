@@ -13,6 +13,19 @@ interface are the same ones a learned policy would use. See:
 """
 
 from .go_to_goal import go_to_goal
-from .nav_goal_cfg import NavGoalCfg, compute_goal_obs, progress_reward
+from .nav_goal_cfg import (
+    NavGoalCfg,
+    compute_goal_obs,
+    compute_nav_obs,
+    potential_shaping,
+    progress_reward,
+)
 
-__all__ = ["go_to_goal", "NavGoalCfg", "compute_goal_obs", "progress_reward"]
+__all__ = [
+    "go_to_goal",
+    "NavGoalCfg",
+    "compute_goal_obs",
+    "compute_nav_obs",
+    "potential_shaping",
+    "progress_reward",
+]
