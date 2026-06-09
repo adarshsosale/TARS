@@ -54,3 +54,29 @@ class HexabotFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
             data_augmentation_func=compute_symmetric_states_lr,
         ),
     )
+
+
+@configclass
+class HexabotRoughPPORunnerCfg(HexabotFlatPPORunnerCfg):
+    """Rough-terrain teacher PPO config (Milestone 1).
+
+    Same PPO + left-right symmetry augmentation as the flat run; the only changes
+    are (a) the distillable terrain-teacher policy class, whose privileged height
+    scan enters through a latent bottleneck (see teacher_policy.py), and (b) a
+    separate experiment dir. `class_name` is resolved by train_rough.py, which
+    injects `HexabotTeacherActorCritic` into rsl_rl's runner namespace.
+    """
+
+    experiment_name = "hexabot_rough_direct"
+    # rough terrain takes longer to master than flat; the curriculum needs headroom.
+    max_iterations = 3000
+
+    policy = RslRlPpoActorCriticCfg(
+        class_name="HexabotTeacherActorCritic",
+        init_noise_std=0.8,
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
+        actor_hidden_dims=[128, 128, 128],
+        critic_hidden_dims=[128, 128, 128],
+        activation="elu",
+    )

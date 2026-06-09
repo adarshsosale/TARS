@@ -25,7 +25,7 @@ from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.sim import PhysxCfg, SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
@@ -207,6 +207,17 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200,
         render_interval=decimation,
+        # GPU contact buffers. Defaults (collision stack 2**26 = 64 MB) overflow on the
+        # rough triangle-mesh terrain with 4096 envs spawn-settling at once -> PhysX
+        # drops contacts (corrupts the contact sensor that feeds every gait reward).
+        # The scene requests ~94 MB; 2**28 = 256 MB leaves headroom for rougher
+        # curriculum rows. The found/lost-pairs bumps pre-empt the next buffer to
+        # overflow once collisions are processed instead of dropped. Harmless on flat.
+        physx=PhysxCfg(
+            gpu_collision_stack_size=2**28,                 # 256 MB (was 64 MB)
+            gpu_found_lost_pairs_capacity=2**23,            # was 2**21
+            gpu_total_aggregate_pairs_capacity=2**23,       # was 2**21
+        ),
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
@@ -323,6 +334,26 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     # translation driver.
     lin_vel_reward_scale = 0.5
     forward_progress_reward_scale = 12.0      # linear, un-saturated, 0 at standstill -> the real translation driver
+    # --- anti-standstill MOTION GATE on the saturating exp trackers ------------
+    # The two exp trackers below (track_lin_vel_xy_exp, track_ang_vel_z_exp) SATURATE
+    # and pay a FROZEN robot nearly full marks: a straight episode commands yaw=0, a
+    # standing robot has yaw_rate=0 -> exp(0)=1 -> it collects the WHOLE 1.5 of
+    # track_ang for doing nothing (plus ~0.46 of track_lin). On flat the linear
+    # forward_progress (+12) + stationary_penalty (-15) out-weigh that ~1.95 comfort
+    # baseline so it walks. On ROUGH terrain, stepping forward risks a fall that ends
+    # the episode and forfeits the future comfort stream, so that guaranteed
+    # standstill comfort becomes the safe optimum and the policy collapses to standing
+    # (the curriculum then demotes everyone back to flat and it stays stuck) — the
+    # documented "saturating exp term re-creates the static stance" landmine, now
+    # tripped by terrain death-risk. Gate BOTH exp trackers by ACTUAL motion so a
+    # frozen robot earns ~0 from them while a robot that tracks its command still
+    # earns the full bonus. The gate opens on real forward OR yaw speed (covers
+    # turn-in-place) and is exactly 0 at standstill. At convergence a walking policy
+    # (>=motion_gate_lin_ref) sees the gate fully open -> identical reward (no
+    # regression on the known-good flat run); only the standstill freebie is removed.
+    motion_gate_enabled = True
+    motion_gate_lin_ref = 0.10        # body fwd speed [m/s] that fully opens the gate
+    motion_gate_ang_ref = 0.30        # |yaw rate| [rad/s] that fully opens the gate (turn-in-place)
     # standstill-when-commanded penalty (the structural anti-static-stance fix). forward_progress
     # is a reward that's merely 0 at standstill, so a frozen tall stance still nets the large
     # command-independent comfort baseline (alive + foot_support + saturating trackers ~= +2.6) and

@@ -49,6 +49,12 @@ class HexabotEnv(DirectRLEnv):
 
         # control steps elapsed since each env was last reset (settle grace)
         self._steps_since_reset = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # ground height under each robot [m]. 0 on flat ground; the rough-terrain
+        # subclass updates it from the height scanner each step so the world-z based
+        # reward/termination terms below (base height, belly clearance, foot
+        # clearance, too-low death) become TERRAIN-RELATIVE without duplicating the
+        # reward. Plain flat training leaves it at 0 (a no-op).
+        self._ground_height = torch.zeros(self.num_envs, device=self.device)
         # global control-step counter driving the stand-first curriculum + imitation anneal
         self._step_count = 0
 
@@ -110,6 +116,16 @@ class HexabotEnv(DirectRLEnv):
                 "imitation",
             ]
         }
+
+        # --- robust anti-standstill DIAGNOSTICS (flushed per-episode in _reset_idx) --
+        # Directly answer "is the robot standing still when commanded to move?" from
+        # the training log (TensorBoard Metrics/*) without watching a video — the test
+        # for whether the motion-gate fix actually took. Accumulated each step below.
+        self._diag_sums = {
+            k: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            for k in ["fwd_speed", "cmd_vx", "track_err", "stand_when_cmd"]
+        }
+        self._diag_steps = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # contact-sensor body indices
         self._base_id, _ = self._contact_sensor.find_bodies("base_link")
@@ -256,6 +272,20 @@ class HexabotEnv(DirectRLEnv):
             torch.square(self._commands[:, :2] - self._robot.data.root_lin_vel_b[:, :2]), dim=1
         )
         lin_vel_error_mapped = torch.exp(-lin_vel_error / 0.25)
+        # anti-standstill MOTION GATE: the exp trackers saturate and pay a frozen robot
+        # nearly full marks (a straight standing robot maxes track_ang at yaw_rate=0).
+        # On rough terrain the death-risk of stepping makes that guaranteed standstill
+        # comfort the safe optimum -> the policy stands. Gate the exp trackers by REAL
+        # forward OR yaw speed so a frozen robot earns ~0 from them, while a robot that
+        # tracks its command (gate fully open) keeps the full bonus. See cfg.
+        if self.cfg.motion_gate_enabled:
+            move_gate = torch.clamp(
+                torch.clamp(self._robot.data.root_lin_vel_b[:, 0], min=0.0) / self.cfg.motion_gate_lin_ref
+                + self._robot.data.root_ang_vel_b[:, 2].abs() / self.cfg.motion_gate_ang_ref,
+                max=1.0,
+            )
+        else:
+            move_gate = torch.ones(self.num_envs, device=self.device)
         # linear forward-progress reward (BODY-frame +x so "forward" follows the
         # robot's heading — required for turning; on straight episodes the heading
         # term below keeps body +x aligned to world +x). 0 at standstill, capped at cmd.
@@ -275,14 +305,20 @@ class HexabotEnv(DirectRLEnv):
         z_vel_error = torch.square(self._robot.data.root_lin_vel_b[:, 2])
         ang_vel_error = torch.sum(torch.square(self._robot.data.root_ang_vel_b[:, :2]), dim=1)
         flat_orientation = torch.sum(torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1)
-        base_height_error = torch.square(self._robot.data.root_pos_w[:, 2] - self.cfg.target_height)
-        belly_height = self._robot.data.root_pos_w[:, 2] - self.cfg.belly_half_thickness
+        # height terms are TERRAIN-RELATIVE: subtract the ground height under the robot
+        # (0 on flat ground, scanner-derived in the rough-terrain subclass).
+        base_height_error = torch.square(
+            self._robot.data.root_pos_w[:, 2] - self._ground_height - self.cfg.target_height
+        )
+        belly_height = self._robot.data.root_pos_w[:, 2] - self.cfg.belly_half_thickness - self._ground_height
         belly_clearance = torch.clamp(self.cfg.belly_clearance_min - belly_height, min=0.0)
         # foot-below-belly support: claw tip world z via tibia pose + local claw offset
         feet_quat = self._robot.data.body_quat_w[:, self._feet_body_ids, :]
         feet_pos = self._robot.data.body_pos_w[:, self._feet_body_ids, :]
         claw_w = feet_pos + quat_apply(feet_quat, self._claw_offset_local.expand_as(feet_pos))
-        foot_z = claw_w[..., 2]
+        # claw height above the local ground (terrain-relative; ground cancels in the
+        # belly->foot support gap, but foot_clearance below needs it ground-relative).
+        foot_z = claw_w[..., 2] - self._ground_height.unsqueeze(1)
         support = torch.clamp(belly_height.unsqueeze(1) - foot_z, min=0.0, max=self.cfg.support_target)
         foot_support = support.mean(dim=1)
         alive = torch.ones(self.num_envs, device=self.device)
@@ -335,8 +371,14 @@ class HexabotEnv(DirectRLEnv):
         swing_correct = ((~feet_contact) & sched_swing).float().sum(dim=1) / n_sched_swing
         stance_violation = ((~feet_contact) & sched_stance).float().sum(dim=1) / n_sched_stance
         gait_phase = (swing_correct - stance_violation) * moving
-        # foot plant angle: stance feet should point steeply DOWN (claw digs in for grip)
-        foot_downness = torch.clamp((feet_pos[..., 2] - foot_z) / self.cfg.claw_offset, min=0.0, max=1.0)
+        # foot plant angle: stance feet should point steeply DOWN (claw digs in for grip).
+        # Uses the tibia->claw vertical drop (frame-invariant), so the world claw z is
+        # recovered by re-adding the ground height that foot_z was made relative to.
+        foot_downness = torch.clamp(
+            (feet_pos[..., 2] - (foot_z + self._ground_height.unsqueeze(1))) / self.cfg.claw_offset,
+            min=0.0,
+            max=1.0,
+        )
         foot_plant = torch.sum(
             torch.clamp(foot_downness, max=self.cfg.foot_plant_target) * feet_contact.float(), dim=1
         ) * moving
@@ -355,11 +397,21 @@ class HexabotEnv(DirectRLEnv):
         nominal_t = self._cpg.nominal_joint_targets(self._speed_scale)
         imitation = torch.sum(torch.square(cpg_t - nominal_t), dim=1)
 
+        # --- anti-standstill diagnostics (mean over episode, flushed on reset) -----
+        vx_body = self._robot.data.root_lin_vel_b[:, 0]
+        cmd_move = torch.norm(self._commands[:, :2], dim=1) > 0.1
+        self._diag_sums["fwd_speed"] += vx_body
+        self._diag_sums["cmd_vx"] += self._commands[:, 0]
+        self._diag_sums["track_err"] += (self._commands[:, 0] - vx_body).abs()
+        # fraction of commanded-to-move steps where the robot is effectively frozen
+        self._diag_sums["stand_when_cmd"] += (cmd_move & (vx_body < 0.02)).float()
+        self._diag_steps += 1.0
+
         rewards = {
-            "track_lin_vel_xy_exp": lin_vel_error_mapped * self.cfg.lin_vel_reward_scale * self.step_dt,
+            "track_lin_vel_xy_exp": lin_vel_error_mapped * move_gate * self.cfg.lin_vel_reward_scale * self.step_dt,
             "forward_progress": forward_progress * self.cfg.forward_progress_reward_scale * self.step_dt,
             "stationary_penalty": vel_shortfall * self.cfg.stationary_penalty_reward_scale * self.step_dt,
-            "track_ang_vel_z_exp": yaw_rate_error_mapped * self.cfg.yaw_rate_reward_scale * self.step_dt,
+            "track_ang_vel_z_exp": yaw_rate_error_mapped * move_gate * self.cfg.yaw_rate_reward_scale * self.step_dt,
             "lateral_vel_l2": lateral_vel * straight_mask * self.cfg.lateral_vel_reward_scale * self.step_dt,
             "yaw_rate_l2": yaw_rate_l2 * self.cfg.yaw_rate_l2_reward_scale * self.step_dt,
             "heading": heading_err * moving * straight_mask * self.cfg.heading_reward_scale * self.step_dt,
@@ -394,7 +446,8 @@ class HexabotEnv(DirectRLEnv):
         self._steps_since_reset += 1
         self._step_count += 1
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        too_low = self._robot.data.root_pos_w[:, 2] < 0.035
+        # terrain-relative body height (self._ground_height is 0 on flat ground)
+        too_low = (self._robot.data.root_pos_w[:, 2] - self._ground_height) < 0.035
         tilted = self._robot.data.projected_gravity_b[:, 2] > -0.5
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
         base_contact = torch.any(
@@ -470,3 +523,17 @@ class HexabotEnv(DirectRLEnv):
         extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
         extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
         self.extras["log"].update(extras)
+
+        # --- robust anti-standstill diagnostics (mean over the finished episode) ----
+        # Metrics/stand_when_cmd_frac -> 0 and Metrics/fwd_speed -> ~cmd_vx means the
+        # motion-gate fix worked; a value near 1.0 / ~0.0 means it is still standing.
+        denom = self._diag_steps[env_ids].clamp(min=1.0)
+        self.extras["log"]["Metrics/fwd_speed"] = torch.mean(self._diag_sums["fwd_speed"][env_ids] / denom).item()
+        self.extras["log"]["Metrics/cmd_vx"] = torch.mean(self._diag_sums["cmd_vx"][env_ids] / denom).item()
+        self.extras["log"]["Metrics/tracking_err"] = torch.mean(self._diag_sums["track_err"][env_ids] / denom).item()
+        self.extras["log"]["Metrics/stand_when_cmd_frac"] = torch.mean(
+            self._diag_sums["stand_when_cmd"][env_ids] / denom
+        ).item()
+        for k in self._diag_sums:
+            self._diag_sums[k][env_ids] = 0.0
+        self._diag_steps[env_ids] = 0.0

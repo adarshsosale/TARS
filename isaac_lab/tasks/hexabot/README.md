@@ -75,7 +75,7 @@ only past the breakout, never on short validation runs.
 ## Where the dormant extensibility seams are
 | Future capability | Seam (already wired, inert) |
 |---|---|
-| Height-scan / terrain perception (locomotion) | `n_height_scan` obs slot + the separable obs block in `_get_observations` |
+| Height-scan / terrain perception (locomotion) | **ACTIVATED in Milestone 1** — `n_height_scan` obs slot now carries the 63-ray privileged scan (`hexabot_rough_env.py`) |
 | Lidar / obstacle features (navigation) | `NavGoalCfg.n_lidar` slot in `compute_goal_obs` |
 | Lateral / turning commands | widen `VY_RANGE`/`YAW_RANGE` in the frozen interface |
 | Obstacles / rough terrain (curriculum) | `obstacle_density`, `terrain_roughness` (stage-0 = 0) |
@@ -83,6 +83,79 @@ only past the breakout, never on short validation runs.
 
 Observation/action **shapes stay fixed** across stages — the dormant slots absorb
 new inputs, so no policy re-architecture is needed.
+
+## Milestone 1 — Rough-terrain locomotion (privileged teacher)
+
+Extends the flat locomotion policy to rough terrain. The frozen `(vx, vy, yaw)`
+interface and the navigation layer are **unchanged** — locomotion still tracks
+velocity commands, now over uneven ground. This activates the dormant
+height-scan seam from M0 and trains a **distillable teacher**: a future milestone
+distills it into a *blind* proprioceptive student (no exteroceptive sensor).
+
+Task id: `Isaac-Velocity-Rough-Hexabot-Direct-v0`
+(`hexabot_rough_env.py` / `hexabot_rough_env_cfg.py`, PPO cfg
+`HexabotRoughPPORunnerCfg`). It **subclasses** the flat env/cfg — same CPG action,
+same reward family, same DR — and adds only what rough terrain needs.
+
+### What changed vs flat
+- **Terrain:** `terrain_type="generator"` with a **curriculum** over blind-feasible
+  sub-terrains (`rough_terrains.py`): gentle slopes, random rough ground, low
+  boxes, low stairs — scaled hard to the 72 mm hexapod. **No** gaps / stepping
+  stones / beams (a blind student could never recover those, so the teacher must
+  not learn to rely on them). Level 0 ≈ flat; difficulty ramps per-env with the
+  terrain-level curriculum.
+- **Curriculum driver:** the direct workflow has no curriculum manager, so
+  `HexabotRoughEnv._reset_idx` calls `terrain.update_env_origins(...)` itself
+  (walk past ½ tile → level up; cover < ½ the commanded distance → level down)
+  and logs the **mean terrain level** — the lead progress metric.
+- **Privileged height scanner** (`RayCasterCfg`, 9×7 = **63 rays**, yaw-aligned,
+  on `base_link`) fills the dormant `n_height_scan` slot → `observation_space
+  75 → 138`. It is **teacher-only exteroception**.
+- **Distillable teacher** (`teacher_policy.py`, `HexabotTeacherActorCritic`): the
+  privileged scan enters ONLY through a **latent bottleneck**, isolated from the
+  proprioceptive path:
+  `z = scan_encoder(scan[63→16]);  action = actor_trunk([proprio(75) | z(16)])`.
+  The critic is privileged (consumes the full 138-d obs; discarded at deploy).
+- **Terrain-relative rewards:** a ground height from the scanner
+  (`self._ground_height`) makes base-height / belly-clearance / foot-clearance /
+  `too_low`-death terrain-relative. Heading / lateral-position penalties softened
+  (rough ground legitimately yaws the body). DR extends to payload mass + base COM
+  shift (`RoughEventCfg`) on top of the inherited friction / actuator / IMU DR.
+- **Symmetry aug** extends to mirror the height-scan rays left↔right
+  (`_scan_mirror_idx`, built from the ray pattern in `HexabotRoughEnv`).
+- **Imitation reward** keeps the M0 anneal (→0 over the near-flat early
+  curriculum); it is **not** re-anchored to the flat gait on rough terrain.
+
+### Train (headless) / render / export
+```bash
+cd external/IsaacLab          # conda env: env_isaaclab
+
+# full pipeline (train -> export best -> render a clip), one command:
+bash ../../scripts/milestone1_rough.sh
+#   knobs:  NUM_ENVS=4096 MAX_ITER=3000 bash ../../scripts/milestone1_rough.sh
+#   plumbing check: SMOKE=1 bash ../../scripts/milestone1_rough.sh
+
+# or step by step:
+./isaaclab.sh -p ../../isaac_lab/train_rough.py --num_envs 4096 --max_iterations 3000 --headless
+./isaaclab.sh -p ../../isaac_lab/play_rough.py --select_best        # export best -> exported/policy.pt(+onnx)
+
+# render the LATEST checkpoint over rough terrain, any time (even mid-training):
+bash ../../scripts/render_latest_rough.sh
+#   SECONDS_CLIP=15 CMD_VX=0.25 TERRAIN_LEVEL=8 bash ../../scripts/render_latest_rough.sh
+# -> hexabot_model/hexabot_rough_locomotion.mp4
+```
+Logs → `logs/rsl_rl/hexabot_rough_direct/`. **Watch (TensorBoard):**
+`Curriculum/terrain_level` **first** (mean terrain difficulty — the lead signal),
+then `Episode_Reward/track_lin_vel_xy_exp` / `forward_progress`, episode length,
+and `Episode_Termination/died`. The eplen-plateau lesson from flat still holds —
+judge only on a full run, not a short validation.
+
+### Distillation seam (for the next milestone)
+Keep `actor_trunk` **verbatim**; replace `scan_encoder` with a proprioceptive-
+**history encoder** trained to regress the same latent `z`. Because the trunk only
+ever sees `[proprio | z]` and never the raw scan, the student is a clean module
+swap, not a re-architecture. `play_rough.py` already exports the full teacher
+(encoder + trunk) so `z` is well-defined.
 
 ## Self-tests (no GPU)
 ```bash

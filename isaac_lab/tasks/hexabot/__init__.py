@@ -15,3 +15,14 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HexabotFlatPPORunnerCfg",
     },
 )
+
+# Milestone 1: rough-terrain locomotion (privileged height-scan teacher).
+gym.register(
+    id="Isaac-Velocity-Rough-Hexabot-Direct-v0",
+    entry_point=f"{__name__}.hexabot_rough_env:HexabotRoughEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.hexabot_rough_env_cfg:HexabotRoughEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HexabotRoughPPORunnerCfg",
+    },
+)

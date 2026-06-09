@@ -58,7 +58,7 @@ def _mirror_joint_vec(x: torch.Tensor, midx: torch.Tensor, msign: torch.Tensor) 
     return x[..., midx] * msign
 
 
-def _mirror_policy_obs(obs, midx, msign, act_idx, cpg_idx) -> torch.Tensor:
+def _mirror_policy_obs(obs, midx, msign, act_idx, cpg_idx, scan_idx=None) -> torch.Tensor:
     obs = obs.clone()
     dev = obs.device
     obs[:, _GRAV] = obs[:, _GRAV] * torch.tensor([1.0, -1.0, 1.0], device=dev)
@@ -68,7 +68,11 @@ def _mirror_policy_obs(obs, midx, msign, act_idx, cpg_idx) -> torch.Tensor:
     obs[:, _JVEL] = _mirror_joint_vec(obs[:, _JVEL], midx, msign)
     obs[:, _PREVACT] = obs[:, _PREVACT][:, act_idx]      # CPG action mirror: leg-swap, no sign
     obs[:, _CPG] = obs[:, _CPG][:, cpg_idx]              # CPG phase: leg-swap, no value change
-    # 75: dormant height-scan block (if any) is left untouched
+    # 75:  PRIVILEGED height-scan block (rough terrain). The reflection y -> -y permutes
+    # the scan rays to their left-right partners (heights themselves are unchanged).
+    if scan_idx is not None and obs.shape[1] > 75:
+        scan = obs[:, 75:]
+        obs[:, 75:] = scan[:, scan_idx]
     return obs
 
 
@@ -83,12 +87,13 @@ def compute_symmetric_states_lr(env, obs=None, actions=None):
     msign = unwrapped._jt_mirror_sign
     act_idx = unwrapped._act_mirror_idx
     cpg_idx = unwrapped._cpg_mirror_idx
+    scan_idx = getattr(unwrapped, "_scan_mirror_idx", None)   # present only on rough terrain
 
     if obs is not None:
         batch_size = obs.batch_size[0]
         obs_aug = obs.repeat(2)
         obs_aug["policy"][:batch_size] = obs["policy"][:]
-        obs_aug["policy"][batch_size:] = _mirror_policy_obs(obs["policy"], midx, msign, act_idx, cpg_idx)
+        obs_aug["policy"][batch_size:] = _mirror_policy_obs(obs["policy"], midx, msign, act_idx, cpg_idx, scan_idx)
     else:
         obs_aug = None
 

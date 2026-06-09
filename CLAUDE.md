@@ -192,6 +192,55 @@ launched. The exit-1 on smoke is only the known `simulation_app.close()` hang (p
 
 ---
 
+## Milestone 1 — rough-terrain locomotion (privileged distillable teacher)
+
+Extends the flat locomotion policy to rough terrain. **Frozen `(vx,vy,yaw)`
+interface and the navigation layer are UNCHANGED.** New task id
+`Isaac-Velocity-Rough-Hexabot-Direct-v0` SUBCLASSES the flat env/cfg (same CPG
+action, reward family, DR) and adds only rough-terrain machinery. Read
+`isaac_lab/tasks/hexabot/README.md` (Milestone 1 section) first.
+
+**New files:** `hexabot_rough_env.py`, `hexabot_rough_env_cfg.py`,
+`rough_terrains.py`, `teacher_policy.py`; PPO cfg `HexabotRoughPPORunnerCfg`;
+entry points `train_rough.py` / `play_rough.py` / `render_rough.py`; bash
+`scripts/milestone1_rough.sh` (train→export→video) and
+`scripts/render_latest_rough.sh`. Edited: `hexabot_env.py` (+`self._ground_height`
+makes height terms terrain-relative), `symmetry.py` (+scan mirror), task `__init__`.
+
+**Key design:**
+- **Distillable teacher** (`teacher_policy.py:HexabotTeacherActorCritic`, a custom
+  rsl_rl ActorCritic injected into the runner namespace by the entry scripts):
+  obs is one `policy` group `[proprio(75) | height_scan(63)]`; the privileged scan
+  enters ONLY through a latent bottleneck — `z=scan_encoder(63→16)`,
+  `action=actor_trunk([proprio|z])`. Critic uses full 138-d (privileged, dropped at
+  deploy). **Distillation seam:** keep `actor_trunk`, swap `scan_encoder` for a
+  proprio-history encoder regressing the same `z`.
+- **Terrain:** `terrain_type="generator"`, curriculum on, blind-feasible only
+  (slopes/rough/low boxes/low stairs; NO gaps/stepping-stones/beams), scaled tiny
+  for the 72 mm robot. `rough_terrains.py`. **Gotcha:** a sub-terrain's
+  `grid_width` must NOT evenly divide tile `size` (auto border width would be 0 →
+  RuntimeError); boxes use 0.3 into 2.0.
+- **Curriculum driver:** direct workflow has no curriculum manager →
+  `HexabotRoughEnv._reset_idx` calls `terrain.update_env_origins` itself and logs
+  `Curriculum/terrain_level` (mean) — the **lead metric**.
+- **Height scanner:** `RayCasterCfg` 9×7=63 rays on base_link, yaw-aligned; fills
+  `n_height_scan` (obs 75→138). PRIVILEGED.
+- **obs width 138** → `symmetry.py` mirrors the scan tail via `_scan_mirror_idx`
+  (built from the ray pattern). Imitation reward keeps the M0 anneal (→0 over the
+  near-flat early curriculum); NOT re-anchored on rough.
+- **Export:** the stock rsl_rl exporter grabs only `policy.actor` (the trunk), so
+  `play_rough.py` exports a FULL-teacher wrapper (encoder+trunk, traced) instead.
+
+**Verified (2026-06-09, smoke):** `train_rough.py` (64 envs, 5 iters) runs —
+terrain generates, obs=138 (actor/critic in_features 138; scan_encoder 63→16;
+trunk 91→18), symmetry+scan active, all reward terms + `Curriculum/terrain_level`
+log, 0 errors. `play_rough.py --select_best` exports `exported/policy.pt`(+onnx).
+The exit-1 is the known `simulation_app.close()` hang (pkilled). **Full
+multi-hour run NOT yet done** — run `scripts/milestone1_rough.sh` and judge on
+`Curriculum/terrain_level` climbing past the eplen plateau.
+
+---
+
 ## Checkpoint for other agents
 
 After all fixes, a 60-iter smoke run showed: ep length 5→112 and rising, deaths 820→3/iter. The hardware/stance/actuators are fine — the original collapse was spawn-death + last-checkpoint export, not the robot.
