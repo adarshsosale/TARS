@@ -20,6 +20,9 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--policy", type=str, required=True, help="path to exported locomotion policy.pt")
+parser.add_argument("--nav_policy", type=str, default=None,
+                    help="path to exported NAVIGATION policy.pt (Layer 2). If given, it produces the "
+                         "velocity command each nav tick instead of the hand-coded go_to_goal controller.")
 parser.add_argument("--goal_x", type=float, default=2.5, help="single-goal world x [m] (forward)")
 parser.add_argument("--goal_y", type=float, default=0.0, help="single-goal world y [m] (left)")
 parser.add_argument("--waypoints", type=str, default=None,
@@ -56,7 +59,8 @@ sys.path.insert(0, os.path.dirname(_HERE))                    # repo root
 
 from hexabot_env_cfg import HEXABOT_CFG, HexabotFlatEnvCfg  # noqa: E402
 from cpg import HexabotCPG  # noqa: E402
-from isaac_lab.nav import NavGoalCfg, go_to_goal  # noqa: E402
+from isaac_lab.interfaces import VX_RANGE, VY_RANGE, YAW_RANGE  # noqa: E402
+from isaac_lab.nav import NavGoalCfg, compute_nav_obs, go_to_goal  # noqa: E402
 
 CFG = HexabotFlatEnvCfg()
 NAV = NavGoalCfg()
@@ -95,6 +99,13 @@ def main():
 
     policy = torch.jit.load(args_cli.policy, map_location=sim.device).eval()
     print(f"[NAV] loaded locomotion policy: {args_cli.policy}", flush=True)
+
+    nav_policy = None
+    if args_cli.nav_policy:
+        nav_policy = torch.jit.load(args_cli.nav_policy, map_location=sim.device).eval()
+        print(f"[NAV] loaded NAVIGATION policy (Layer 2): {args_cli.nav_policy}", flush=True)
+    cmd_lo = torch.tensor([VX_RANGE[0], VY_RANGE[0], YAW_RANGE[0]], device=sim.device)
+    cmd_hi = torch.tensor([VX_RANGE[1], VY_RANGE[1], YAW_RANGE[1]], device=sim.device)
 
     cpg = HexabotCPG(robot.joint_names, num_envs=1, device=sim.device, cfg=CFG)
     soft_lo = robot.data.soft_joint_pos_limits[..., 0]
@@ -156,13 +167,26 @@ def main():
         if c % NAV.nav_decimation == 0:
             dxb, dyb = goal_rel_robot(waypoints[wp_idx])
             d = (dxb ** 2 + dyb ** 2) ** 0.5
-            # advance to the next waypoint once close enough (turning toward it as needed)
-            if d < WP_ADVANCE and wp_idx < len(waypoints) - 1:
+            # advance to the next waypoint once close enough (turning toward it as needed).
+            # The trained nav policy uses the same reach_tol the env advances on.
+            advance_tol = NAV.reach_tol if nav_policy is not None else WP_ADVANCE
+            if d < advance_tol and wp_idx < len(waypoints) - 1:
                 wp_idx += 1
                 dxb, dyb = goal_rel_robot(waypoints[wp_idx])
                 d = (dxb ** 2 + dyb ** 2) ** 0.5
-            cmd = go_to_goal((dxb, dyb), lidar=None, reach_tol=NAV.reach_tol)  # dormant lidar slot
-            command = cmd.to_tensor(device=sim.device, batch=1)
+            if nav_policy is not None:
+                # Layer 2 (trained): build the goal-conditioned obs and emit the command
+                robot_xy = robot.data.root_pos_w[:, :2]                  # (1,2)
+                nav_obs = compute_nav_obs(
+                    robot_xy, robot_yaw().view(1), waypoints[wp_idx].view(1, 2),
+                    command, robot.data.root_ang_vel_b[:, 2], NAV,
+                )
+                with torch.inference_mode():
+                    command = torch.clamp(nav_policy(nav_obs), cmd_lo, cmd_hi)
+            else:
+                # Layer 2 (hand-coded placeholder)
+                cmd = go_to_goal((dxb, dyb), lidar=None, reach_tol=NAV.reach_tol)  # dormant lidar slot
+                command = cmd.to_tensor(device=sim.device, batch=1)
             if wp_idx == len(waypoints) - 1 and d < NAV.reach_tol and reached_at is None:
                 reached_at = c * control_dt
 

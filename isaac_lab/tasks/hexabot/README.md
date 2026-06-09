@@ -65,6 +65,12 @@ only past the breakout, never on short validation runs.
 ```bash
 ./isaaclab.sh -p ../../isaac_lab/run_nav_demo.py --policy <.../exported/policy.pt> --goal_x 2.5
 ```
+- **Trainable waypoint navigation (PPO, frozen loco in the loop):** the nav layer is now
+  learnable — `Isaac-Nav-Waypoint-Flat-Hexabot-Direct-v0` (`isaac_lab/tasks/nav/`,
+  `train_nav.py` / `play_nav.py`). Potential-based reward, nav(5 Hz)/loco(50 Hz) timing
+  split, command clamped to the frozen envelope, dormant obstacle seams. See
+  **`isaac_lab/tasks/nav/README.md`**. `run_nav_demo.py --nav_policy <…>` drives the
+  full stack with the trained policy instead of `go_to_goal`.
 
 ## Where the dormant extensibility seams are
 | Future capability | Seam (already wired, inert) |
