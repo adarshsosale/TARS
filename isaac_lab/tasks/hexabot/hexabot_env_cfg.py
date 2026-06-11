@@ -189,18 +189,20 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     episode_length_s = 12.0
     decimation = 4                 # 200 Hz physics -> 50 Hz control
     # The policy action is NOT joint offsets — it is per-leg CPG modulation
-    # [d_freq, d_coxa_amp, d_lift] x 6 legs = 18 (see cpg.py). Zero action == the
-    # analytical tripod gait, so the analytical baseline is a *reference* the policy
-    # can leave, never a residual added on top of its output (hard constraint #2).
-    action_space = 18
+    # [d_freq, d_coxa_amp, d_lift, d_stance] x 6 legs = 24 (see cpg.py). Zero action
+    # == the analytical tripod gait, so the analytical baseline is a *reference* the
+    # policy can leave, never a residual added on top of its output (hard constraint
+    # #2). d_stance (Phase E) is the one-sided ride-height channel: press the femurs
+    # down to walk with the belly higher than the nominal stance on rough terrain.
+    action_space = 24
     # Proprioceptive-ONLY observation — NO base linear velocity (not measurable on
-    # the real robot, hard constraint). Layout (75):
-    #   grav(3) ang_vel(3) cmd(3) jpos-def(18) jvel(18) prev_action(18) cpg_phase(12)
+    # the real robot, hard constraint). Layout (81 = 57 + action_space):
+    #   grav(3) ang_vel(3) cmd(3) jpos-def(18) jvel(18) prev_action(24) cpg_phase(12)
     # A dormant exteroceptive (height-scan) block of width `n_height_scan` (=0 now)
     # is appended LAST — the seam where a terrain encoder plugs in at a later
     # curriculum stage WITHOUT changing this shape. observation_space tracks it.
     n_height_scan = 0              # dormant exteroceptive slot width (stage 0: empty)
-    observation_space = 75 + n_height_scan
+    observation_space = 57 + action_space + n_height_scan
     state_space = 0
 
     # simulation
@@ -293,6 +295,8 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     cpg_kf = 0.5                      # policy authority over per-leg frequency (+/-50%)
     cpg_kmu = 0.5                     # policy authority over per-leg coxa amplitude (+/-50%)
     cpg_klift = 0.6                   # policy authority over per-leg swing lift (+/-60%)
+    cpg_kstance = 0.35                # max per-leg femur press-down [rad] (one-sided ride-height
+                                      # raise, ~+30-40 mm at full press; 0 action = nominal stance)
     cpg_coupling_strength = 2.0       # weak pull toward the tripod phase offsets (0 = none)
 
     # --- annealing imitation reward (reference, NOT residual) -----------------
@@ -323,6 +327,19 @@ class HexabotFlatEnvCfg(DirectRLEnvCfg):
     # steps after a reset so a residual spawn transient can't kill the episode
     # before the policy acts (15 steps = 0.3 s; episodes run to 600 steps).
     settle_steps = 15
+
+    # --- belly-contact tolerance (Phase E) -----------------------------------
+    # Flat defaults keep the original hard rules (any base touch > 1 N kills, a
+    # single too-low step kills); the rough cfg relaxes BOTH so a light belly nudge
+    # while clambering is a usable optimization rather than instant failure, with
+    # death reserved for component-damage-level impacts and sustained lying-flat.
+    base_contact_force_death = 1.0    # base contact force [N] that terminates (flat: any touch)
+    too_low_grace_steps = 0           # consecutive too-low steps tolerated before death (flat: none)
+    belly_contact_free = 2.0          # base contact force [N] under which a graze costs nothing
+    belly_contact_reward_scale = -0.1 # graded penalty per N of base contact force above the free
+                                      # allowance (flat: inert — death fires first at 1 N)
+    foot_stumble_reward_scale = 0.0   # penalty per foot whose contact force is horizontal-dominated
+                                      # (toe caught a vertical face). 0 on flat; rough turns it on.
 
     # reward scales
     # --- track a forward base velocity, go straight ---

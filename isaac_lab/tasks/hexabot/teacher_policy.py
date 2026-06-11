@@ -7,13 +7,13 @@ proprioceptive student (the distillation seam for the next milestone).
 
 The single policy observation group is laid out as
 
-    [ proprio (75) | height_scan (n_scan, PRIVILEGED) ]
+    [ proprio | height_scan (n_scan, PRIVILEGED) ]
 
 and this module routes the privileged terrain channel through a NARROW LATENT
 BOTTLENECK, kept isolated from the proprioceptive path:
 
     z      = scan_encoder(height_scan)         # n_scan -> latent_dim  (the bottleneck)
-    action = actor_trunk( [proprio | z] )      # 75 + latent_dim -> 18
+    action = actor_trunk( [proprio | z] )      # n_proprio + latent_dim -> num_actions
 
 That is the RMA / teacher-student decomposition. To distill into a blind student
 next milestone, you KEEP `actor_trunk` verbatim and SWAP `scan_encoder` for a
@@ -54,7 +54,7 @@ class HexabotTeacherActorCritic(ActorCritic):
         obs: TensorDict,
         obs_groups: dict[str, list[str]],
         num_actions: int,
-        n_proprio: int = 75,
+        n_proprio: int | None = None,
         scan_latent_dim: int = 16,
         scan_encoder_dims: tuple[int, ...] | list[int] = (128, 64),
         actor_hidden_dims: tuple[int] | list[int] = (128, 128, 128),
@@ -75,8 +75,14 @@ class HexabotTeacherActorCritic(ActorCritic):
             **kwargs,
         )
 
-        # full actor-obs width = proprio + scan (single 'policy' group)
+        # full actor-obs width = proprio + scan (single 'policy' group). The proprio
+        # width is DERIVED (obs width minus the cfg's scan width) so action/obs
+        # resizes — e.g. Phase E's 18->24 CPG action — can't silently shift the split.
         num_actor_obs = self.get_actor_obs(obs).shape[-1]
+        if n_proprio is None:
+            from .hexabot_rough_env_cfg import N_HEIGHT_SCAN
+
+            n_proprio = num_actor_obs - N_HEIGHT_SCAN
         self.n_proprio = n_proprio
         self.n_scan = num_actor_obs - n_proprio
         assert self.n_scan > 0, (

@@ -165,10 +165,14 @@ cfg derives `cmd_vx_range` from `VX_RANGE`). Entry-point scripts add the repo ro
 `sys.path` so `import isaac_lab.interfaces` resolves.
 
 **Locomotion (Layer 1) — changed vs the old policy:**
-- **Obs is proprioceptive-ONLY, 75-d, NO base linear velocity** (not measurable on the real
-  robot). Layout: grav(3) ang_vel(3) cmd(3) jpos(18) jvel(18) prev_act(18) cpg_phase(12)
+- **Obs is proprioceptive-ONLY, 81-d, NO base linear velocity** (not measurable on the real
+  robot). Layout: grav(3) ang_vel(3) cmd(3) jpos(18) jvel(18) prev_act(24) cpg_phase(12)
   + dormant `n_height_scan`(0) height-scan seam. `symmetry.py` matches this layout.
-- **Action MODULATES a CPG** (`cpg.py`), not joint offsets: per-leg `[d_freq,d_coxa_amp,d_lift]`.
+  (Was 75-d with prev_act(18) before M1.5 Phase E added the d_stance action channel.)
+- **Action MODULATES a CPG** (`cpg.py`), not joint offsets: per-leg
+  `[d_freq,d_coxa_amp,d_lift,d_stance]` (24). `d_stance` (Phase E) is a ONE-SIDED femur
+  press-down (≤`cpg_kstance`=0.35 rad ≈ +30–40 mm ride height) so the policy can walk
+  belly-up on rough terrain; ≤0 is a no-op (can't reopen the belly-crawl).
   **Zero action == the analytical tripod gait** (`tripod_gait.py:gait_pose`) scaled by command
   speed (`cpg_v_ref`); at vx=0 it holds the standing stance, so the CPG STRUCTURALLY prevents
   belly-crawl (stand curriculum shortened to 500 steps). The CPG action mirror is a leg-swap
@@ -238,6 +242,31 @@ log, 0 errors. `play_rough.py --select_best` exports `exported/policy.pt`(+onnx)
 The exit-1 is the known `simulation_app.close()` hang (pkilled). **Full
 multi-hour run NOT yet done** — run `scripts/milestone1_rough.sh` and judge on
 `Curriculum/terrain_level` climbing past the eplen plateau.
+(M1.5 Phases B+C later extended the scan to 91 rays and Phase E widened the
+action to 24 → current rough obs = 81 + 91 = **172**; see below + the M1.5 memory.)
+
+### Milestone 1.5 Phase E — belly management + anticipatory ride height (2026-06-10)
+
+Level-8 failure was "belly touches ground → instant death" (flat 1 N base-contact
+rule) plus no actuator to walk taller. Changes (all inert on flat — flat defaults
+keep the original hard rules):
+- **`d_stance` CPG channel:** action 18→24 (`[d_freq,d_coxa_amp,d_lift,d_stance]`),
+  obs 75→81 (rough 166→172). One-sided femur press-down, `cpg_kstance=0.35` rad.
+  Zero-action == analytical gait still holds; CPG/action mirrors stay leg-swap-only
+  (stance is handedness-free). `symmetry.py` slices and `teacher_policy.n_proprio`
+  (now DERIVED as obs−N_HEIGHT_SCAN) updated; everything else derives shapes.
+- **Graded belly contact (rough):** death only above `base_contact_force_death=50 N`
+  (~2.6× bodyweight, damage proxy); below that `belly_contact_force` penalty −0.1/N
+  above a 2 N free allowance. `too_low` death now needs `too_low_grace_steps=25`
+  (0.5 s) consecutive low steps — transient clamber-nudges survive, lying flat dies.
+- **Anticipatory posture (rough):** scan q90-above-mid-ground protrusion (incl. the
+  +0.40 m lookahead) → `_height_target_offset` (≤30 mm; raises base-height target +
+  belly_clearance floor → the −50 belly term pays for raising the belly BEFORE
+  obstacles) and `_foot_clearance_offset` (≤+25 mm swing-apex raise). New
+  `foot_stumble` penalty (−1.0 rough, 0 flat) prices horizontal-dominated foot hits
+  (toe-catch on box walls/stair risers). Watch `Metrics/height_target_offset`.
+- **LANDMINE:** action/obs widths changed — pre-Phase-E checkpoints (incl. the
+  2026-06-10_09-48-32 B+C run) are NOT loadable/resumable; retrain from scratch.
 
 ---
 

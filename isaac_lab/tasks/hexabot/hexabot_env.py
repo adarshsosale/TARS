@@ -55,8 +55,24 @@ class HexabotEnv(DirectRLEnv):
         # clearance, too-low death) become TERRAIN-RELATIVE without duplicating the
         # reward. Plain flat training leaves it at 0 (a no-op).
         self._ground_height = torch.zeros(self.num_envs, device=self.device)
+        # Phase E: terrain-adaptive posture targets, both 0 on flat ground (no-op).
+        # The rough subclass sets them each step from the height scan's local
+        # protrusion: _height_target_offset raises the base-height target AND the
+        # required belly clearance ("belly higher than normal" mode, anticipatory
+        # because the scan looks +0.40 m ahead); _foot_clearance_offset raises the
+        # rewarded swing-apex cap so steps clear obstacles instead of toe-catching.
+        self._height_target_offset = torch.zeros(self.num_envs, device=self.device)
+        self._foot_clearance_offset = torch.zeros(self.num_envs, device=self.device)
+        # consecutive control steps each env has spent below the too-low floor
+        # (the too-low death fires only past cfg.too_low_grace_steps of these).
+        self._too_low_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         # global control-step counter driving the stand-first curriculum + imitation anneal
         self._step_count = 0
+        # per-env multiplier on the tetrapod_contact gait reward. 1.0 == unscaled (flat,
+        # and the rough B+C baseline). The rough subclass may relax it at high terrain
+        # levels (Phase D ablation) where the flat "exactly 4 feet down" template fights
+        # terrain-correct contact schedules. Scalar here; the subclass may set a (N,) tensor.
+        self._tetrapod_weight_scale = 1.0
 
         # --- CPG (the action mechanism) ---------------------------------------
         self._cpg = HexabotCPG(self._robot.data.joint_names, self.num_envs, self.device, self.cfg)
@@ -114,6 +130,8 @@ class HexabotEnv(DirectRLEnv):
                 "gait_phase",
                 "foot_plant",
                 "imitation",
+                "belly_contact_force",
+                "foot_stumble",
             ]
         }
 
@@ -266,6 +284,19 @@ class HexabotEnv(DirectRLEnv):
             parts.append(torch.zeros(self.num_envs, self.cfg.n_height_scan, device=self.device))
         return {"policy": torch.cat(parts, dim=-1)}
 
+    def _get_foot_ground_height(self) -> torch.Tensor:
+        """Per-foot ground height (N, n_feet) for the terrain-relative foot terms.
+
+        Flat ground: the single scalar `self._ground_height` (0) broadcast to every
+        foot. The rough-terrain subclass OVERRIDES this with front/middle/rear
+        regional medians, so `foot_clearance` is judged against the ground UNDER each
+        foot rather than one body-wide median — the Phase B accuracy fix. Body-wide
+        terms (base height, belly clearance, too-low death) keep using the scalar
+        `self._ground_height` (the middle region on rough terrain).
+        """
+        n_feet = len(self._feet_body_ids)
+        return self._ground_height.unsqueeze(1).expand(self.num_envs, n_feet)
+
     def _get_rewards(self) -> torch.Tensor:
         # forward (x) velocity tracking; vy command is 0
         lin_vel_error = torch.sum(
@@ -306,20 +337,32 @@ class HexabotEnv(DirectRLEnv):
         ang_vel_error = torch.sum(torch.square(self._robot.data.root_ang_vel_b[:, :2]), dim=1)
         flat_orientation = torch.sum(torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1)
         # height terms are TERRAIN-RELATIVE: subtract the ground height under the robot
-        # (0 on flat ground, scanner-derived in the rough-terrain subclass).
+        # (0 on flat ground, scanner-derived in the rough-terrain subclass). The Phase E
+        # `_height_target_offset` (0 on flat) raises BOTH the tracked base height and the
+        # required belly clearance over locally rough terrain, so the strong one-sided
+        # belly_clearance penalty is what drives the learned "raise the belly before
+        # committing" mode — the scan-derived offset rises ~0.7 s before an obstacle.
         base_height_error = torch.square(
-            self._robot.data.root_pos_w[:, 2] - self._ground_height - self.cfg.target_height
+            self._robot.data.root_pos_w[:, 2] - self._ground_height
+            - (self.cfg.target_height + self._height_target_offset)
         )
         belly_height = self._robot.data.root_pos_w[:, 2] - self.cfg.belly_half_thickness - self._ground_height
-        belly_clearance = torch.clamp(self.cfg.belly_clearance_min - belly_height, min=0.0)
+        belly_clearance = torch.clamp(
+            self.cfg.belly_clearance_min + self._height_target_offset - belly_height, min=0.0
+        )
         # foot-below-belly support: claw tip world z via tibia pose + local claw offset
         feet_quat = self._robot.data.body_quat_w[:, self._feet_body_ids, :]
         feet_pos = self._robot.data.body_pos_w[:, self._feet_body_ids, :]
         claw_w = feet_pos + quat_apply(feet_quat, self._claw_offset_local.expand_as(feet_pos))
-        # claw height above the local ground (terrain-relative; ground cancels in the
-        # belly->foot support gap, but foot_clearance below needs it ground-relative).
-        foot_z = claw_w[..., 2] - self._ground_height.unsqueeze(1)
-        support = torch.clamp(belly_height.unsqueeze(1) - foot_z, min=0.0, max=self.cfg.support_target)
+        claw_z = claw_w[..., 2]
+        # per-foot terrain-relative clearance: claw height above the ground UNDER THAT
+        # FOOT (front/mid/rear region on rough terrain; the single median on flat). This
+        # is what foot_clearance rewards. foot_support / foot_plant below are geometric
+        # (belly-vs-claw, tibia-vs-claw) and ground-INDEPENDENT, so they use claw_z direct
+        # and never mix two different ground references at a step edge.
+        foot_z = claw_z - self._get_foot_ground_height()
+        belly_world = (self._robot.data.root_pos_w[:, 2] - self.cfg.belly_half_thickness).unsqueeze(1)
+        support = torch.clamp(belly_world - claw_z, min=0.0, max=self.cfg.support_target)
         foot_support = support.mean(dim=1)
         alive = torch.ones(self.num_envs, device=self.device)
         # effort / smoothness
@@ -358,8 +401,11 @@ class HexabotEnv(DirectRLEnv):
         sym_match = (feet_contact == feet_contact[:, self._feet_mirror_idx]).float().mean(dim=1)
         gait_symmetry = sym_match * (n_contact < 6).float() * moving
         swing = (~feet_contact).float()
+        # swing-apex cap is per-env: the flat target plus the Phase E terrain raise
+        # (0 on flat), so bigger steps pay off exactly where the terrain demands them.
+        clearance_cap = (self.cfg.foot_clearance_target + self._foot_clearance_offset).unsqueeze(1)
         foot_clearance = torch.sum(
-            torch.clamp(foot_z, min=0.0, max=self.cfg.foot_clearance_target) * swing, dim=1
+            torch.minimum(torch.clamp(foot_z, min=0.0), clearance_cap) * swing, dim=1
         ) * moving
         # phase schedule comes from the CPG now: a leg's local phase p>=0.5 is its swing
         # half (matches tripod_gait.gait_pose). Reindex CPG phase into foot order.
@@ -375,7 +421,7 @@ class HexabotEnv(DirectRLEnv):
         # Uses the tibia->claw vertical drop (frame-invariant), so the world claw z is
         # recovered by re-adding the ground height that foot_z was made relative to.
         foot_downness = torch.clamp(
-            (feet_pos[..., 2] - (foot_z + self._ground_height.unsqueeze(1))) / self.cfg.claw_offset,
+            (feet_pos[..., 2] - claw_z) / self.cfg.claw_offset,
             min=0.0,
             max=1.0,
         )
@@ -387,6 +433,21 @@ class HexabotEnv(DirectRLEnv):
             torch.max(torch.norm(net_contact_forces[:, :, self._undesired_contact_body_ids], dim=-1), dim=1)[0] > 1.0
         )
         contacts = torch.sum(is_contact, dim=1)
+
+        # --- Phase E: graded belly-contact force + foot stumble -------------------
+        # A light belly graze is a legitimate optimization on rough terrain (the
+        # death threshold is force-based now, see _get_dones); what gets taxed is
+        # FORCE — leaning weight on the belly costs in proportion to the load above
+        # a small free allowance, so the policy can nudge but not ride.
+        base_force = torch.norm(net_contact_forces[:, :, self._base_id], dim=-1).amax(dim=(1, 2))
+        belly_contact_force = torch.clamp(base_force - self.cfg.belly_contact_free, min=0.0)
+        # stumble: a foot whose contact force is horizontal-dominated has caught a
+        # vertical face (box wall / stair riser) instead of landing on top of it —
+        # the "mis-step" failure. Inert on flat (scale 0).
+        feet_forces = net_contact_forces[:, :, self._feet_ids]
+        f_xy = torch.norm(feet_forces[..., :2], dim=-1)
+        f_z = feet_forces[..., 2].abs()
+        foot_stumble = ((f_xy > 2.0 * f_z) & (f_xy > 1.0)).any(dim=1).float().sum(dim=1)
 
         # --- annealing imitation reward (analytical gait as a reference) ----------
         # Deviation of the policy's CPG joint targets from the zero-action (analytical)
@@ -430,12 +491,14 @@ class HexabotEnv(DirectRLEnv):
             "feet_air_time": air_time * self.cfg.feet_air_time_reward_scale * self.step_dt,
             "foot_slip": foot_slip * self.cfg.foot_slip_reward_scale * self.step_dt,
             "undesired_contacts": contacts * self.cfg.undesired_contact_reward_scale * self.step_dt,
-            "tetrapod_contact": tetrapod_contact * self.cfg.tetrapod_contact_reward_scale * self.step_dt,
+            "tetrapod_contact": tetrapod_contact * self.cfg.tetrapod_contact_reward_scale * self._tetrapod_weight_scale * self.step_dt,
             "gait_symmetry": gait_symmetry * self.cfg.gait_symmetry_reward_scale * self.step_dt,
             "foot_clearance": foot_clearance * self.cfg.foot_clearance_reward_scale * self.step_dt,
             "gait_phase": gait_phase * self.cfg.gait_phase_reward_scale * self.step_dt,
             "foot_plant": foot_plant * self.cfg.foot_plant_reward_scale * self.step_dt,
             "imitation": imitation * self.cfg.imitation_reward_scale * imit_w * self.step_dt,
+            "belly_contact_force": belly_contact_force * self.cfg.belly_contact_reward_scale * self.step_dt,
+            "foot_stumble": foot_stumble * self.cfg.foot_stumble_reward_scale * self.step_dt,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         for key, value in rewards.items():
@@ -446,13 +509,23 @@ class HexabotEnv(DirectRLEnv):
         self._steps_since_reset += 1
         self._step_count += 1
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        # terrain-relative body height (self._ground_height is 0 on flat ground)
-        too_low = (self._robot.data.root_pos_w[:, 2] - self._ground_height) < 0.035
+        # terrain-relative body height (self._ground_height is 0 on flat ground).
+        # Phase E: dipping below the floor only kills once it is SUSTAINED past
+        # cfg.too_low_grace_steps consecutive steps (0 on flat = the original
+        # immediate death), so a transient belly-down moment while clambering over
+        # an obstacle is survivable but lying flat still terminates.
+        below = (self._robot.data.root_pos_w[:, 2] - self._ground_height) < 0.035
+        self._too_low_count = torch.where(
+            below, self._too_low_count + 1, torch.zeros_like(self._too_low_count)
+        )
+        too_low = self._too_low_count > self.cfg.too_low_grace_steps
         tilted = self._robot.data.projected_gravity_b[:, 2] > -0.5
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
-        base_contact = torch.any(
-            torch.max(torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1)[0] > 1.0, dim=1
-        )
+        # base contact kills only above a force threshold (flat: 1 N = any touch;
+        # rough raises it to a component-damage proxy so light grazes survive and
+        # are priced by the graded belly_contact_force penalty instead).
+        base_force = torch.norm(net_contact_forces[:, :, self._base_id], dim=-1).amax(dim=(1, 2))
+        base_contact = base_force > self.cfg.base_contact_force_death
         died = too_low | tilted | base_contact
         # suppress deaths during the post-reset settling transient
         died = died & (self._steps_since_reset > self.cfg.settle_steps)
@@ -468,6 +541,7 @@ class HexabotEnv(DirectRLEnv):
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
         self._steps_since_reset[env_ids] = 0
+        self._too_low_count[env_ids] = 0
         # reset the CPG phases (re-seed at the tripod offsets + a random global phase)
         self._cpg.reset(env_ids)
         # reset signal-side DR state for these envs

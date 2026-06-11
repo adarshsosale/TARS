@@ -17,13 +17,22 @@ Design
   COUPLING, so the tripod structure is robust while the policy retimes/reshapes
   it. At the tripod equilibrium the coupling term is exactly zero, so zero action
   reproduces the analytical gait bit-for-bit (verified in tests).
-* The policy action is per-leg `[d_freq, d_coxa_amp, d_lift]` (leg-major, 18
-  total). Nominal amplitudes come straight from the analytical gait defaults
-  (`coxa_amp=0.26`, `lift=0.55`).
+* The policy action is per-leg `[d_freq, d_coxa_amp, d_lift, d_stance]`
+  (leg-major, 24 total). Nominal amplitudes come straight from the analytical
+  gait defaults (`coxa_amp=0.26`, `lift=0.55`).
 
       f_i    = f_base    * (1 + kf   * d_freq_i)        # cadence  -> speed
       mu_i   = mu_base   * (1 + kmu  * d_coxa_amp_i)     # coxa sweep -> stride
       lift_i = lift_base * (1 + klift* d_lift_i)         # swing height (terrain later)
+      st_i   = kstance   * clamp(d_stance_i, 0, 1)       # femur press-down -> ride height
+
+  `d_stance` is the rough-terrain posture channel: a ONE-SIDED femur press-down
+  offset that extends the leg and raises the body ("belly higher than normal"
+  mode). One-sided because lowering the body would reopen the belly-crawl
+  optimum the CPG exists to forbid. It is a posture, not a gait amplitude, so it
+  is NOT scaled by the commanded speed and applies through stance AND swing
+  (the whole trajectory shifts down at the foot == body up). At d_stance<=0 it
+  is exactly 0, preserving the zero-action contract below.
 
 * Joint mapping reuses the analytical waveform verbatim: stance half sweeps the
   coxa to push the body, swing half lifts femur/tibia. Output is raw joint
@@ -57,9 +66,9 @@ def _mirror_leg(name: str) -> str:
 class HexabotCPG:
     """Tripod-seeded per-leg phase CPG. Vectorized over `num_envs`."""
 
-    ACTION_PER_LEG = 3   # [d_freq, d_coxa_amp, d_lift]
+    ACTION_PER_LEG = 4   # [d_freq, d_coxa_amp, d_lift, d_stance]
     N_LEGS = 6
-    ACTION_DIM = N_LEGS * ACTION_PER_LEG          # 18
+    ACTION_DIM = N_LEGS * ACTION_PER_LEG          # 24
     PHASE_OBS_DIM = N_LEGS * 2                     # per-leg sin/cos -> 12
 
     def __init__(self, joint_names: list[str], num_envs: int, device, cfg):
@@ -71,6 +80,7 @@ class HexabotCPG:
         self.kf = cfg.cpg_kf
         self.kmu = cfg.cpg_kmu
         self.klift = cfg.cpg_klift
+        self.kstance = getattr(cfg, "cpg_kstance", 0.0)
         self.coupling = cfg.cpg_coupling_strength
 
         # per-leg geometry, in LEG_ORDER
@@ -107,13 +117,15 @@ class HexabotCPG:
         self.theta[env_ids] = ((phi0 + self._psi.view(1, -1)) % 1.0) * 2.0 * math.pi
 
     def _params(self, action: torch.Tensor, speed_scale: torch.Tensor | float = 1.0):
-        """Split the (N,18) action into per-leg (f, mu, lift), each (N,6).
+        """Split the (N,24) action into per-leg (f, mu, lift, stance), each (N,6).
 
         `speed_scale` (scalar or (N,1)) scales the nominal stride/lift amplitude by
         the commanded speed: at speed_scale=0 the nominal gait collapses to the
         standing stance (coxa sweep 0, no lift) so zero-action + vx=0 == stand; at
         speed_scale=1 it is the full analytical tripod gait. Frequency is NOT
         scaled (phase keeps advancing; flat amplitude just freezes the joints).
+        The stance press-down is a POSTURE (ride height), not a gait amplitude, so
+        it is one-sided (raise only) and independent of speed_scale.
         """
         a = action.view(-1, self.N_LEGS, self.ACTION_PER_LEG)
         if not torch.is_tensor(speed_scale):
@@ -122,11 +134,12 @@ class HexabotCPG:
         f = (self.f_base * (1.0 + self.kf * a[..., 0])).clamp(min=0.0)
         mu = (self.mu_base * s * (1.0 + self.kmu * a[..., 1])).clamp(min=0.0)
         lift = (self.lift_base * s * (1.0 + self.klift * a[..., 2])).clamp(min=0.0)
-        return f, mu, lift
+        stance = self.kstance * a[..., 3].clamp(0.0, 1.0)
+        return f, mu, lift, stance
 
     def step(self, action: torch.Tensor, dt: float):
         """Advance every leg's phase by one control step (freq-modulated + coupled)."""
-        f, _, _ = self._params(action)                            # (N,6)
+        f, _, _, _ = self._params(action)                         # (N,6)
         dtheta = 2.0 * math.pi * f                                # base advance
         if self.coupling > 0.0:
             # weak pull toward the tripod phase relationships (zero at equilibrium)
@@ -141,7 +154,7 @@ class HexabotCPG:
         At `speed_scale=1`, `action=0` reproduces `tripod_gait.gait_pose` exactly;
         at `speed_scale=0` it holds the standing stance.
         """
-        _, mu, lift = self._params(action, speed_scale)
+        _, mu, lift, press = self._params(action, speed_scale)
         p = self.theta / (2.0 * math.pi)                          # (N,6) in [0,1)
         stance = p < 0.5
         s_stance = p / 0.5
@@ -149,9 +162,10 @@ class HexabotCPG:
         # coxa: +/-1 ramp in stance, reverse ramp in swing -> a smooth sweep
         sweep = torch.where(stance, 2.0 * s_stance - 1.0, 1.0 - 2.0 * s_swing)
         qc = mu * self._sin_az.unsqueeze(0) * sweep               # (N,6)
-        # femur/tibia lift only during swing
+        # femur/tibia lift only during swing; the stance press-down offset applies
+        # to the WHOLE cycle (posture: foot trajectory shifts down == body rides up)
         k = torch.sin(math.pi * s_swing) * (~stance).float()
-        qf = STANCE_FEMUR - lift * k
+        qf = STANCE_FEMUR + press - lift * k
         qt = STANCE_TIBIA + 0.4 * lift * k
 
         targets = torch.zeros(action.shape[0], self._n_joints, device=self.device)

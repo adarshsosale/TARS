@@ -55,6 +55,13 @@ parser.add_argument(
     default=False,
     help="Behaviour-clone the analytical tripod gait into the policy before PPO (see bc_warmstart.py).",
 )
+parser.add_argument(
+    "--tetrapod_relax_frac",
+    type=float,
+    default=None,
+    help="Phase D ablation: relax the tetrapod_contact reward with terrain level "
+    "(overrides the rough cfg default of 0.0; the ablation uses 0.5).",
+)
 parser.add_argument("--ray-proc-id", "-rid", type=int, default=None, help="Configured by Ray integration, else None.")
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
@@ -141,6 +148,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    # Phase D ablation override (None -> keep the cfg default of 0.0 = no relaxation)
+    if args_cli.tetrapod_relax_frac is not None:
+        env_cfg.tetrapod_relax_frac = args_cli.tetrapod_relax_frac
+        print(f"[INFO] Phase D: tetrapod_relax_frac = {env_cfg.tetrapod_relax_frac}")
     if args_cli.distributed and args_cli.device is not None and "cpu" in args_cli.device:
         raise ValueError("Distributed training requires a GPU device (e.g. --device cuda).")
 

@@ -17,11 +17,12 @@ Reflection (world/body y -> -y) acting on the PROPRIOCEPTIVE obs:
   * joint pos / vel           -> swap each leg with its L<->R mirror, sign-flip the
                                  coxa (yaw) joints (femur/tibia pitch joints swap
                                  without a flip — ANYmal HAA vs HFE/KFE).
-  * previous action (CPG)     -> swap each leg's [d_freq,d_coxa_amp,d_lift] block
-                                 with its mirror. NO sign flip: CPG params are
+  * previous action (CPG)     -> swap each leg's [d_freq,d_coxa_amp,d_lift,d_stance]
+                                 block with its mirror. NO sign flip: CPG params are
                                  sign-invariant amplitudes/frequencies (the coxa
                                  sweep's handedness lives in sin(azimuth), which is
-                                 carried by the leg swap, not the param sign).
+                                 carried by the leg swap, not the param sign; the
+                                 stance press-down is a handedness-free posture).
   * CPG phase (per-leg sin/cos) -> swap each leg's (sin,cos) block with its mirror;
                                  values UNCHANGED (the reflection maps leg lf's pose
                                  to leg rf's pose, so mirrored phase = partner phase).
@@ -30,8 +31,8 @@ Reflection (world/body y -> -y) acting on the PROPRIOCEPTIVE obs:
 The base linear velocity is NOT in the obs (proprioceptive-only), so there is no
 lin-vel channel to mirror here — unlike the old 68-dim layout.
 
-Obs layout (75 [+ n_height_scan]):
-  [grav 0:3][ang_vel 3:6][cmd 6:9][jpos 9:27][jvel 27:45][prev_act 45:63][cpg 63:75]
+Obs layout (81 [+ n_height_scan]):
+  [grav 0:3][ang_vel 3:6][cmd 6:9][jpos 9:27][jvel 27:45][prev_act 45:69][cpg 69:81]
 
 `_jt_mirror_idx`/`_jt_mirror_sign` (joints), `_act_mirror_idx` (CPG action),
 `_cpg_mirror_idx` (CPG phase) are all built once in `HexabotEnv.__init__`.
@@ -43,14 +44,17 @@ import torch
 
 __all__ = ["compute_symmetric_states_lr"]
 
-# obs slice boundaries (proprioceptive, no base linear velocity)
+# obs slice boundaries (proprioceptive, no base linear velocity). prev_act is the
+# 24-wide CPG action (4 params x 6 legs, Phase E added d_stance); _N_PROPRIO is
+# where the privileged height-scan tail starts on rough terrain.
 _GRAV = slice(0, 3)
 _ANGV = slice(3, 6)
 _CMD = slice(6, 9)
 _JPOS = slice(9, 27)
 _JVEL = slice(27, 45)
-_PREVACT = slice(45, 63)
-_CPG = slice(63, 75)
+_PREVACT = slice(45, 69)
+_CPG = slice(69, 81)
+_N_PROPRIO = 81
 
 
 def _mirror_joint_vec(x: torch.Tensor, midx: torch.Tensor, msign: torch.Tensor) -> torch.Tensor:
@@ -68,11 +72,11 @@ def _mirror_policy_obs(obs, midx, msign, act_idx, cpg_idx, scan_idx=None) -> tor
     obs[:, _JVEL] = _mirror_joint_vec(obs[:, _JVEL], midx, msign)
     obs[:, _PREVACT] = obs[:, _PREVACT][:, act_idx]      # CPG action mirror: leg-swap, no sign
     obs[:, _CPG] = obs[:, _CPG][:, cpg_idx]              # CPG phase: leg-swap, no value change
-    # 75:  PRIVILEGED height-scan block (rough terrain). The reflection y -> -y permutes
+    # 81:  PRIVILEGED height-scan block (rough terrain). The reflection y -> -y permutes
     # the scan rays to their left-right partners (heights themselves are unchanged).
-    if scan_idx is not None and obs.shape[1] > 75:
-        scan = obs[:, 75:]
-        obs[:, 75:] = scan[:, scan_idx]
+    if scan_idx is not None and obs.shape[1] > _N_PROPRIO:
+        scan = obs[:, _N_PROPRIO:]
+        obs[:, _N_PROPRIO:] = scan[:, scan_idx]
     return obs
 
 

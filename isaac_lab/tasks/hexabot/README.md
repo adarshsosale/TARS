@@ -18,14 +18,17 @@ turns on lateral/turning **with no change to either policy**.
 
 ## Layer 1 — Locomotion (PPO, continuous control)
 - **Task:** `Isaac-Velocity-Flat-Hexabot-Direct-v0` (direct workflow, rsl_rl PPO).
-- **Observation — proprioceptive ONLY (75-d), no base linear velocity** (not
+- **Observation — proprioceptive ONLY (81-d), no base linear velocity** (not
   measurable on the real robot): projected gravity, base angular velocity, the
   velocity command, joint pos/vel, previous action, CPG phase. A **dormant
   height-scan slot** (`n_height_scan=0`) is appended last — the exteroceptive seam.
 - **Action — CPG modulation, NOT joint offsets** (`cpg.py`): per-leg
-  `[d_freq, d_coxa_amp, d_lift]`. **Zero action == the analytical tripod gait**
-  (`hexabot_model/isaac/tripod_gait.py`) scaled to the commanded speed, so the
-  analytical gait is a *reference*, never a residual basis (hard constraint #2).
+  `[d_freq, d_coxa_amp, d_lift, d_stance]` (24 total). **Zero action == the
+  analytical tripod gait** (`hexabot_model/isaac/tripod_gait.py`) scaled to the
+  commanded speed, so the analytical gait is a *reference*, never a residual basis
+  (hard constraint #2). `d_stance` (M1.5 Phase E) is a one-sided femur press-down
+  that raises the ride height — the rough-terrain "belly up" posture channel; ≤0
+  is a no-op so it cannot reopen the belly-crawl.
 - **Reward:** dense velocity tracking (primary) + stability/orientation + effort +
   gait-quality terms + an **annealing imitation reward** (deviation from the
   analytical gait, weight → 0 over the curriculum, tied to curriculum progress).
@@ -108,14 +111,16 @@ same reward family, same DR — and adds only what rough terrain needs.
   `HexabotRoughEnv._reset_idx` calls `terrain.update_env_origins(...)` itself
   (walk past ½ tile → level up; cover < ½ the commanded distance → level down)
   and logs the **mean terrain level** — the lead progress metric.
-- **Privileged height scanner** (`RayCasterCfg`, 9×7 = **63 rays**, yaw-aligned,
+- **Privileged height scanner** (`RayCasterCfg`, 13×7 = **91 rays** after the
+  M1.5 Phase C forward extension — body-frame x ∈ [−0.20, +0.40] m, yaw-aligned,
   on `base_link`) fills the dormant `n_height_scan` slot → `observation_space
-  75 → 138`. It is **teacher-only exteroception**.
+  81 → 172`. It is **teacher-only exteroception**.
 - **Distillable teacher** (`teacher_policy.py`, `HexabotTeacherActorCritic`): the
   privileged scan enters ONLY through a **latent bottleneck**, isolated from the
   proprioceptive path:
-  `z = scan_encoder(scan[63→16]);  action = actor_trunk([proprio(75) | z(16)])`.
-  The critic is privileged (consumes the full 138-d obs; discarded at deploy).
+  `z = scan_encoder(scan[91→16]);  action = actor_trunk([proprio(81) | z(16)])`.
+  The critic is privileged (consumes the full 172-d obs; discarded at deploy).
+  The proprio/scan split is derived from the cfg (`n_proprio = obs − N_HEIGHT_SCAN`).
 - **Terrain-relative rewards:** a ground height from the scanner
   (`self._ground_height`) makes base-height / belly-clearance / foot-clearance /
   `too_low`-death terrain-relative. Heading / lateral-position penalties softened
@@ -125,6 +130,28 @@ same reward family, same DR — and adds only what rough terrain needs.
   (`_scan_mirror_idx`, built from the ray pattern in `HexabotRoughEnv`).
 - **Imitation reward** keeps the M0 anneal (→0 over the near-flat early
   curriculum); it is **not** re-anchored to the flat gait on rough terrain.
+
+### Milestone 1.5 Phase E — belly management + anticipatory ride height
+Level-8 diagnosis: the belly touches the ground and the episode ends (the flat
+1 N base-contact death), and the policy has no way to walk taller. Three changes,
+all inert on flat ground:
+- **`d_stance` CPG channel** (action 18 → 24, obs 75 → 81): a one-sided per-leg
+  femur press-down (≤ `cpg_kstance`=0.35 rad ≈ +30–40 mm) so the policy can
+  *physically* raise its belly. Zero action is still the analytical gait.
+- **Graded belly contact instead of binary death:** on rough, base contact kills
+  only above `base_contact_force_death` = 50 N (~2.6× bodyweight — a component-
+  damage proxy); below that it is priced linearly (`belly_contact_force`, −0.1/N
+  above a 2 N free graze allowance). The `too_low` death tolerates 0.5 s of
+  transient belly-down (`too_low_grace_steps`=25) — clambering nudges are a
+  legitimate optimization now; lying flat still terminates.
+- **Anticipatory posture targets:** the scan's q90-above-mid-ground protrusion
+  (incl. the +0.40 m lookahead) raises the base-height target + belly-clearance
+  floor (`_height_target_offset`, ≤ 30 mm) and the rewarded swing apex
+  (`_foot_clearance_offset`, ≤ +25 mm) ~0.7 s *before* the obstacle — the −50
+  belly-clearance term then pays the policy to go "belly higher than normal"
+  before committing. A `foot_stumble` penalty (−1.0, horizontal-dominated foot
+  forces) prices toe-catches on box walls / stair risers directly.
+  Watch `Metrics/height_target_offset` in TensorBoard to see the mode engage.
 
 ### Train (headless) / render / export
 ```bash
